@@ -33,13 +33,32 @@ bin/commands/           → Individual command scripts (bash)
 
 | Agent | Owns | Model |
 |-------|------|-------|
-| `schema-architect` | `packages/db/`, `packages/shared/` | inherit |
+| `schema-architect` | `packages/db/`, `packages/shared/`, `packages/ui/` | inherit |
 | `web-developer` | `apps/web/` | inherit |
 | `mobile-developer` | `apps/mobile/` | inherit |
 | `quality-gate` | cross-cutting (read-only) | sonnet |
-| `infra-ops` | CI/CD, Docker, Bicep | sonnet |
+| `infra-ops` | CI/CD, Docker, Bicep, `bin/` | sonnet |
 
 **Flow:** `schema-architect` → `web-developer` + `mobile-developer` (parallel) → `quality-gate`
+
+### Coordination Protocol
+
+- **Handoff:** When `schema-architect` finishes, it posts the list of changed types/schemas so web and mobile agents know what to import.
+- **Parity:** `web-developer` and `mobile-developer` must implement the same user-facing features. If one discovers a missing shared type or helper, it requests it from `schema-architect` before duplicating logic.
+- **Escalation:** If an agent is blocked (e.g., unclear requirement, conflicting convention), it stops and flags the issue to the lead rather than guessing.
+- **Quality gate triggers:** Run `quality-gate` after every feature or fix — never merge without it passing. Also run it after any schema migration to catch cross-package type breakage.
+
+### Compound Learning
+
+- After completing each task, every teammate appends to `REFLECTION.md` (project root):
+  - What surprised me
+  - One pattern worth adding to AGENTS.md
+  - One thing I'd do differently next time
+- Lead reviews reflections and merges approved learnings into AGENTS.md `## LEARNED` section.
+- Only the lead approves changes to AGENTS.md — teammates PROPOSE, never write directly.
+- Keep entries concrete and actionable, not vague.
+- Format: "DO [specific thing] BECAUSE [specific reason]"
+- Next session's agents read `## LEARNED` automatically — knowledge compounds across sessions.
 
 ## CLI (`bin/wv`)
 
@@ -77,3 +96,8 @@ If you find yourself repeating a multi-step shell operation, codify it:
 - Secrets in Azure Key Vault only. Local dev uses `.env.local` (gitignored).
 - Integration tests use testcontainers with real Postgres — no DB mocks.
 - Shared package has highest test priority — bugs there affect both apps.
+
+## LEARNED
+
+<!-- Approved learnings from REFLECTION.md go here. Format: DO [thing] BECAUSE [reason] -->
+

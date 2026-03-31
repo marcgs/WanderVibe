@@ -16,6 +16,9 @@ WanderVibe is a collaborative trip planning app for friends and family. It provi
 
 ```
 wandervibe/
+├── bin/
+│   ├── wv                      → CLI dispatcher
+│   └── commands/               → Individual command scripts (bash)
 ├── apps/
 │   ├── web/                → Next.js (App Router) on Vercel
 │   └── mobile/             → React Native + Expo
@@ -309,7 +312,7 @@ Photo
 
 ## Features by Release
 
-**Both web and mobile apps are developed in parallel from v1.** Agent teams (Web Agent and Mobile Agent) work simultaneously on each feature, sharing types and logic from `@wandervibe/shared`.
+**Both web and mobile apps are developed in parallel from v1.** They share types and logic from `@wandervibe/shared`.
 
 ### v1 — Core Trip Planning
 
@@ -513,15 +516,33 @@ Users paste raw text (confirmation emails, booking screenshots copied as text) a
 
 - Deployment region: **Switzerland North** (`switzerlandnorth`). All services confirmed available in this region. Azure Communication Services uses the "Switzerland" geography for data residency.
 
+### Environments
+
+Three environments, each fully isolated:
+
+| Environment | Purpose | Azure Resource Group | Vercel Project | EAS Profile |
+|-------------|---------|---------------------|----------------|-------------|
+| **Local** | Development on developer machines. Docker Compose runs Postgres+PostGIS and Azurite locally. No cloud resources needed. | — | — | — |
+| **Dev** | Integration testing and preview. Deployed on every push to `main`. Mirrors prod but with relaxed quotas and test data. | `rg-wandervibe-dev` | `wandervibe-dev` | `development` |
+| **Prod** | Live app used by real users. Deployed via manual promotion or tagged release. | `rg-wandervibe-prod` | `wandervibe-prod` | `production` |
+
+**Isolation rules:**
+- Each environment has its own Azure PostgreSQL instance, Blob Storage account, and Key Vault.
+- Vercel projects are separate per environment (different env vars pointing to the corresponding Azure resources).
+- EAS builds use per-environment profiles (`eas.json`) with distinct bundle identifiers and API endpoints.
+- Local dev never touches remote resources — Docker Compose + `.env.local` only.
+
 ### Vercel
 - **Web app hosting** — Next.js with automatic preview deployments per PR.
 - **Server functions** — API routes for Google Places proxy, paste-and-parse endpoint, auth callbacks.
 - **Environment variables** — references to Azure Key Vault (vault URI + managed identity or service principal credentials for access).
+- **Projects:** `wandervibe-dev` (auto-deploys from `main`) and `wandervibe-prod` (deploys from tagged releases or manual promotion).
 
 ### Expo EAS
 - **Build service** — iOS and Android builds.
 - **EAS Update** — over-the-air updates for non-native changes.
 - **Distribution** — TestFlight (iOS), APK sideload or internal track (Android).
+- **Profiles:** `development` (dev API endpoint, debug signing) and `production` (prod API endpoint, release signing).
 
 ---
 
@@ -586,7 +607,7 @@ https://github.com/marcgs/WanderVibe
 - All of the above, plus:
 - **Deploy web** to Vercel (automatic via Vercel GitHub integration).
 - **Build mobile** via Expo EAS (triggered by GitHub Action).
-- **Parity check** — agent-generated report comparing feature coverage across web and mobile.
+- **Parity check** — report comparing feature coverage across web and mobile.
 
 **On PR (preview):**
 - Vercel preview deployment (automatic).
@@ -594,70 +615,97 @@ https://github.com/marcgs/WanderVibe
 
 ---
 
-## Agent Team Architecture
+## Developer CLI (`bin/wv`)
 
-Development follows an agent orchestra pattern with quality gates and compound learning.
+All dev operations are codified in a single CLI tool: `bin/wv`. Pure bash, no external dependencies. The dispatcher routes to individual command scripts in `bin/commands/`.
 
-### Agent Teams
-
-| Agent | Responsibility | Inputs | Outputs |
-|-------|---------------|--------|---------|
-| **Schema Agent** | Database migrations, Drizzle schema changes | Feature requirements | Migration files, updated types in `@wandervibe/db` |
-| **Shared Logic Agent** | Business logic, validation, types in `@wandervibe/shared` | Schema changes, feature requirements | Validated shared package updates |
-| **Web Agent** | Next.js frontend features | Shared types + feature requirements | Web app pages, components, API routes |
-| **Mobile Agent** | React Native features | Shared types + feature requirements | Mobile screens, components |
-| **Quality Gate Agent** | Tests, linting, type checking, feature parity | PRs from any agent | Pass/fail with actionable feedback |
-| **Parity Agent** | Ensures web and mobile have the same features | Both app codebases | Parity report, missing feature flags |
-
-### Development Flow
+### Architecture
 
 ```
-Feature Request
-      │
-      ▼
-┌─────────────┐
-│ Schema Agent │ ── migrations + types
-└──────┬──────┘
-       ▼
-┌──────────────┐
-│ Shared Logic │ ── validation + business logic
-│    Agent     │
-└──────┬───────┘
-       │
-       ├────────────────┐
-       ▼                ▼
-┌────────────┐   ┌─────────────┐
-│  Web Agent │   │Mobile Agent │  ← parallel
-└─────┬──────┘   └──────┬──────┘
-      │                  │
-      ▼                  ▼
-┌──────────────────────────────┐
-│     Quality Gate Agent       │
-│  (tests, lint, types, a11y)  │
-└──────────────┬───────────────┘
-               ▼
-┌──────────────────────────────┐
-│       Parity Agent           │
-│  (feature coverage check)    │
-└──────────────────────────────┘
+bin/
+├── wv                      → Dispatcher (resolves command → script, forwards args)
+└── commands/
+    ├── up.sh               → Start dev services
+    ├── down.sh             → Tear down dev services
+    ├── serve.sh            → Start dev servers
+    ├── test.sh             → Run tests
+    ├── check.sh            → Full quality gate
+    ├── lint.sh             → Typecheck + lint
+    ├── db.sh               → Database operations
+    ├── build.sh            → Production builds
+    ├── infra.sh            → Provision Azure resources
+    ├── eas.sh              → Trigger Expo EAS mobile builds
+    └── docs.sh             → Print project documentation
 ```
 
-### Quality Gates
+### Commands
 
-Each PR must pass before merge:
-- **Type safety:** `tsc --noEmit` across all packages.
-- **Lint:** ESLint with shared config.
-- **Tests:** Unit tests for shared logic, integration tests for DB queries, component tests for UI.
-- **Build:** Both apps build successfully.
-- **Parity check:** New features flagged if only implemented in one app.
+| Command | Description |
+|---------|-------------|
+| `wv up` | Start local dev services (Docker Compose: Postgres+PostGIS + Azurite), wait for DB readiness, run `drizzle-kit generate` + `drizzle-kit migrate` |
+| `wv down` | Stop Docker services, remove volumes, kill processes on ports 3000 and 8081 |
+| `wv serve [web\|mobile]` | Start dev servers via Turborepo. No arg = all apps. `web` = Next.js only. `mobile` = Expo only |
+| `wv test [--e2e\|--watch] [path]` | Default: `vitest run` across all packages. `--e2e`: Playwright (web). `--e2e --mobile`: Maestro (mobile). `--watch`: Vitest watch mode. Optional path to target specific tests |
+| `wv check` | Full quality gate matching CI: typecheck (`tsc --noEmit`) → lint (ESLint) → test (`vitest run`) |
+| `wv lint [file]` | Run typecheck first, then ESLint. Optional single-file lint |
+| `wv db migrate` | Run Drizzle migrations (dev) |
+| `wv db generate` | Generate Drizzle client from schema |
+| `wv db push` | Push schema changes directly (prototyping only) |
+| `wv db studio` | Open Drizzle Studio (visual DB editor) |
+| `wv db seed` | Run seed script |
+| `wv build [web\|mobile]` | Production build. `web`: `next build`. `mobile`: `expo export`. No arg = both via Turborepo |
+| `wv infra <dev\|prod>` | Provision Azure resources (Postgres Flexible Server, Blob Storage, Key Vault, App Insights) via Bicep. Web hosting is Vercel (auto-deploys via GitHub integration) |
+| `wv eas <dev\|prod>` | Trigger Expo EAS build for mobile with the correct profile. Wraps `eas build --profile <env>` |
+| `wv docs [topic]` | No arg = list available topics. With topic = print that doc (spec, tech, backlog, conventions) |
+| `wv check-env-leak` | Read `.env`, scan staged git diff for any matching secret values. Alert if found |
 
-### Compound Learning
+### Conventions
 
-Agents accumulate context across development cycles:
-- Schema Agent learns the data model patterns used in this project.
-- Web/Mobile Agents learn the component patterns and project conventions.
-- Quality Gate Agent learns common failure patterns and checks proactively.
-- Shared context via `CLAUDE.md` files at repo and package level documenting conventions, patterns, and decisions.
+- **Strict mode:** All scripts use `set -euo pipefail`.
+- **Project root:** Each script resolves `PROJECT_ROOT` dynamically — works from any working directory.
+- **Environment sourcing:** `.env` loaded via `set -a` / `set +a` for deploy and infra commands.
+- **Idempotent:** Commands like `up` and `infra` are safe to re-run.
+- **No npm bin:** CLI is invoked directly as `bin/wv <command>`, not installed globally.
+
+### Docker Compose Services (Local Dev)
+
+| Service | Image | Ports | Purpose |
+|---------|-------|-------|---------|
+| db | postgres:16-alpine | 5432 | PostgreSQL with PostGIS extension |
+| storage | mcr.microsoft.com/azure-storage/azurite | 10000-10002 | Azure Blob Storage emulator |
+
+### Typical Workflows
+
+```bash
+# First-time setup
+bin/wv up                   # Start services + run migrations
+
+# Daily development
+bin/wv serve                # Start all dev servers
+bin/wv serve web            # Start web only
+
+# Before pushing
+bin/wv check                # Full quality gate
+
+# Database changes
+bin/wv db generate          # After editing Drizzle schema
+bin/wv db migrate           # Apply migrations
+
+# Production builds
+bin/wv build web            # Next.js production build (Vercel auto-deploys on push)
+bin/wv eas prod             # Trigger EAS build for mobile
+
+# Azure infrastructure (one-time)
+bin/wv infra prod           # Provision Postgres, Blob, Key Vault, App Insights
+```
+
+### Extending the CLI
+
+The commands above are the starting set. As development unfolds, agents will discover new repetitive or multi-step operations that should be codified as CLI commands. **Any agent may add new commands.** When doing so:
+
+1. Create `bin/commands/<name>.sh` following existing conventions (strict mode, `PROJECT_ROOT` resolution, help text).
+2. Register the command in `bin/wv` (help text + case statement).
+3. Update the command table in this section and in `AGENTS.md`.
 
 ---
 
@@ -666,6 +714,6 @@ Agents accumulate context across development cycles:
 - **Offline support (v1):** Basic — cache last-viewed trip itinerary for read-only access via service worker (web) and TanStack Query persistence (mobile). Full offline editing deferred.
 - **Performance:** First contentful paint < 2s on web. App launch < 1.5s on mobile.
 - **Accessibility:** WCAG 2.1 AA for web. VoiceOver/TalkBack support for mobile.
-- **Data privacy:** All data stored in Azure (region TBD). No third-party analytics. Google Places queries are proxied through Next.js API routes to protect API keys. Application Insights telemetry only — no user tracking.
+- **Data privacy:** All data stored in Azure. No third-party analytics. Google Places queries are proxied through Next.js API routes to protect API keys. Application Insights telemetry only — no user tracking.
 - **Backup:** Azure PostgreSQL automated daily backups with 7-day retention.
 - **Secrets:** All API keys and connection strings stored in Azure Key Vault. Never committed to the repository. Local development uses `.env.local` files (gitignored) populated from Key Vault via a setup script.

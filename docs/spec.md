@@ -54,6 +54,8 @@ wandervibe/
 | Hosting (mobile)   | Expo EAS (TestFlight + APK)                 |
 | Real-time (v1)     | Polling / pull-to-refresh                   |
 | Real-time (v2)     | Azure Web PubSub                            |
+| Push notifications (v2) | Azure Notification Hubs                |
+| Email (v2)         | Azure Communication Services                |
 | Secrets            | Azure Key Vault                             |
 | Monitoring         | Azure Application Insights                  |
 | CI/CD              | GitHub Actions                              |
@@ -388,6 +390,16 @@ The minimum viable product: a trip planner you can use on your next trip.
 - Powered by Azure Web PubSub (WebSocket-based).
 - Presence indicators (who's currently viewing/editing).
 
+**Push Notifications**
+- "Sarah added 3 restaurants to the Tokyo trip" — via Azure Notification Hubs (APNs + FCM).
+- Trip invite notifications, comment mentions, expense reminders.
+- Configurable per user (mute per trip, mute all).
+
+**Email Notifications**
+- Invite emails sent via Azure Communication Services.
+- Expense settlement summaries.
+- Optional weekly trip digest for upcoming trips.
+
 ### v3 — Money & Logistics
 
 **Expense Tracking**
@@ -487,10 +499,18 @@ Users paste raw text (confirmation emails, booking screenshots copied as text) a
 ## Infrastructure
 
 ### Azure
-- **Azure PostgreSQL Flexible Server** — primary database with PostGIS extension. PgBouncer enabled for connection pooling.
-- **Azure Blob Storage** — photos, file attachments.
-- **Azure Key Vault** — all secrets (Google Places API key, Mapbox API key, Claude API key, database connection string, Auth.js secret). Accessed via Azure SDK at runtime, never stored in code or environment variables directly.
-- **Azure Application Insights** — error tracking, performance monitoring, and logging for both web and mobile apps. Server-side via Next.js instrumentation, client-side via the Application Insights JS SDK (web) and React Native plugin (mobile).
+
+| Service | Version | Purpose |
+|---------|---------|---------|
+| Azure PostgreSQL Flexible Server | v1 | Primary database with PostGIS. PgBouncer enabled for connection pooling. |
+| Azure Blob Storage | v1 | Photos, file attachments. |
+| Azure Key Vault | v1 | All secrets (Google Places API key, Mapbox API key, Claude API key, database connection string, Auth.js secret). Accessed via Azure SDK at runtime, never stored in code or environment variables directly. |
+| Azure Application Insights | v1 | Error tracking, performance monitoring, and logging. Server-side via Next.js instrumentation, client-side via Application Insights JS SDK (web) and React Native plugin (mobile). |
+| Azure Web PubSub | v2 | Real-time collaboration — live updates when collaborators make changes, presence indicators. |
+| Azure Notification Hubs | v2 | Push notifications to iOS (APNs) and Android (FCM). Trip invites, activity alerts, expense reminders. |
+| Azure Communication Services | v2 | Transactional email — invite emails, expense settlement summaries, trip share links. |
+| Azure Cache for Redis | If needed | Server-side caching for Google Places API responses and exchange rates. Only add if API costs or latency become a problem. |
+
 - Deployment region: (TBD — choose based on user location).
 
 ### Vercel

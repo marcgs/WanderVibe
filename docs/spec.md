@@ -511,7 +511,7 @@ Users paste raw text (confirmation emails, booking screenshots copied as text) a
 | Azure Communication Services | v2 | Transactional email — invite emails, expense settlement summaries, trip share links. |
 | Azure Cache for Redis | If needed | Server-side caching for Google Places API responses and exchange rates. Only add if API costs or latency become a problem. |
 
-- Deployment region: (TBD — choose based on user location).
+- Deployment region: **Switzerland North** (`switzerlandnorth`). All services confirmed available in this region. Azure Communication Services uses the "Switzerland" geography for data residency.
 
 ### Vercel
 - **Web app hosting** — Next.js with automatic preview deployments per PR.

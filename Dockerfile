@@ -1,7 +1,8 @@
 # Production image for Azure Container Apps.
 # Liveness probe: GET /api/health on port 3000.
+# Database readiness: GET /api/ready. The body is only ok or unavailable.
 # The runtime image has no Prisma CLI. Apply migrations with
-# `prisma migrate deploy` in the deploy workflow (stories #13 and #14).
+# `prisma migrate deploy` in the deploy workflow (story #14).
 #
 #   docker build -t wandervibe .
 #   docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://... wandervibe

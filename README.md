@@ -2,7 +2,7 @@
 
 WanderVibe is a personal trip-planning web app. This repository is the project foundation: the Next.js app, PostgreSQL, tests, and a production container image. Authentication is not implemented yet; accounts and per-user trips arrive in story #15.
 
-The intended host is Azure Container Apps. Azure infrastructure and deploy workflows are not in this repository yet. See [ADR-0001](docs/adr/ADR-0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` opt out with `connection()`.
+The host is Azure Container Apps. Infrastructure is Bicep in [`infra/`](infra), described in [docs/infra.md](docs/infra.md) and [ADR-0002](docs/adr/ADR-0002-azure-hosting.md). The deploy workflow is not in this repository yet (story #14). See [ADR-0001](docs/adr/ADR-0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` and `/api/ready` opt out with `connection()`.
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ The app and the Prisma CLI require `DATABASE_URL`. They do not fall back to a bu
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The home page is a WanderVibe placeholder. [http://localhost:3000/api/health](http://localhost:3000/api/health) returns HTTP 200 and `{ "status": "ok" }` for container health probes.
+Open [http://localhost:3000](http://localhost:3000). The home page is a WanderVibe placeholder. [http://localhost:3000/api/health](http://localhost:3000/api/health) returns HTTP 200 and `{ "status": "ok" }` for container health probes. It does not touch the database. [http://localhost:3000/api/ready](http://localhost:3000/api/ready) runs `SELECT 1` and returns `{ "status": "ok" }` when Postgres answers, or HTTP 503 and `{ "status": "unavailable" }` when it does not. The body does not include error text.
 
 For a production build on the host, without Docker:
 
@@ -57,7 +57,7 @@ docker run --rm -p 3000:3000 \
   wandervibe
 ```
 
-Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps should probe `GET /api/health` on port 3000. Apply production migrations with `prisma migrate deploy` in the deploy workflow (stories #13 and #14). Continuous integration builds this image and does not push it.
+Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps probe `GET /api/health` on port 3000. `GET /api/ready` is the database round-trip for a deploy smoke test. Apply production migrations with `prisma migrate deploy` in the deploy workflow (story #14). Continuous integration builds this image and does not push it.
 
 ## Checks
 
@@ -88,7 +88,7 @@ Then run:
 npm run test:e2e
 ```
 
-Playwright starts `npm run dev` on port 3000 when that port is free. If a dev server is already running there, Playwright reuses it. The smoke tests open the home page and call `/api/health`.
+Playwright starts `npm run dev` on port 3000 when that port is free. If a dev server is already running there, Playwright reuses it. The smoke tests open the home page and call `/api/health` and `/api/ready`. `/api/ready` needs Postgres.
 
 ## Database
 
@@ -105,7 +105,25 @@ npx prisma migrate dev
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on pull requests and on pushes to `main`.
 
 - The `verify` job starts Postgres 17.11, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
-- The `image` job builds the Docker image and checks that `/api/health` returns 200. It does not push the image.
+- The `image` job builds the Docker image, checks that `/api/health` returns 200, and checks that `/api/ready` returns 503 without a database. It does not push the image.
+- The `bicep` job installs Azure CLI and Bicep 0.48.1, then runs `az bicep build` and `az bicep lint` on `infra/`. It does not deploy.
+
+## Infrastructure
+
+Manual deployment of staging and production is documented in [docs/infra.md](docs/infra.md). Short version, after `az login` and with `POSTGRES_ADMIN_PASSWORD` and `AZURE_DEPLOYER_OBJECT_ID` exported:
+
+```bash
+az group create --name rg-wandervibe-staging --location switzerlandnorth
+az deployment group what-if \
+  --resource-group rg-wandervibe-staging \
+  --parameters infra/main.staging.bicepparam
+az deployment group create \
+  --name wandervibe-staging \
+  --resource-group rg-wandervibe-staging \
+  --parameters infra/main.staging.bicepparam
+```
+
+Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. Do not commit the database password.
 
 ## Stack
 
@@ -114,4 +132,4 @@ npx prisma migrate dev
 - Vitest and React Testing Library
 - Playwright
 - ESLint + Prettier
-- Docker, with Azure Container Apps as the deployment target
+- Docker, with Azure Container Apps as the deployment target (see [docs/infra.md](docs/infra.md))

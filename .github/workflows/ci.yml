@@ -107,13 +107,66 @@ jobs:
       - name: Check container health
         run: |
           docker run --detach --name wandervibe --publish 3000:3000 wandervibe:ci
+          healthy=0
           for _ in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:3000/api/health; then
-              docker rm --force wandervibe >/dev/null
-              exit 0
+              healthy=1
+              break
             fi
             sleep 1
           done
+          if [ "${healthy}" -ne 1 ]; then
+            docker logs wandervibe
+            docker rm --force wandervibe >/dev/null
+            exit 1
+          fi
+          # No database in this job. /api/ready must fail closed without leaking details.
+          ready_status="$(curl --silent --output /tmp/ready.json --write-out '%{http_code}' http://127.0.0.1:3000/api/ready)"
           docker logs wandervibe
           docker rm --force wandervibe >/dev/null
-          exit 1
+          if [ "${ready_status}" != "503" ]; then
+            echo "Expected /api/ready to return 503 without a database, got ${ready_status}"
+            cat /tmp/ready.json
+            exit 1
+          fi
+          python3 -c 'import json; body=json.load(open("/tmp/ready.json")); assert body == {"status": "unavailable"}, body'
+
+  bicep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Azure CLI
+        run: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Install Bicep CLI
+        run: |
+          az config set bicep.use_binary_from_path=false
+          az bicep install --version v0.48.1
+          az bicep version
+
+      - name: Build Bicep
+        run: az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
+
+      - name: Lint Bicep
+        run: |
+          status=0
+          while IFS= read -r file; do
+            echo "Linting ${file}"
+            az bicep lint --file "${file}" || status=1
+          done < <(find infra -name '*.bicep' | sort)
+          exit "${status}"
+
+      - name: Validate parameter files
+        run: |
+          if grep -nE 'postgresAdminPassword[[:space:]]*=' infra/*.bicepparam | grep -v 'readEnvironmentVariable'; then
+            echo "Parameter files must read POSTGRES_ADMIN_PASSWORD from the environment."
+            exit 1
+          fi
+          export POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export AZURE_DEPLOYER_OBJECT_ID="00000000-0000-0000-0000-000000000000"
+          az bicep build-params --file infra/main.staging.bicepparam --outfile "${RUNNER_TEMP}/staging.parameters.json"
+          az bicep build-params --file infra/main.prod.bicepparam --outfile "${RUNNER_TEMP}/prod.parameters.json"
+          rm -f "${RUNNER_TEMP}/staging.parameters.json" "${RUNNER_TEMP}/prod.parameters.json"

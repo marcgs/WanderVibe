@@ -1,0 +1,37 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "verbose": false,
+      "rules": {
+        "no-unused-params": {
+          "level": "error"
+        },
+        "no-unused-vars": {
+          "level": "error"
+        },
+        "no-unused-existing-resources": {
+          "level": "error"
+        },
+        "no-hardcoded-env-urls": {
+          "level": "error"
+        },
+        "secure-secrets-in-params": {
+          "level": "error"
+        },
+        "no-unnecessary-dependson": {
+          "level": "error"
+        },
+        "prefer-interpolation": {
+          "level": "error"
+        },
+        "simplify-interpolation": {
+          "level": "error"
+        },
+        "use-recent-api-versions": {
+          "level": "warning"
+        }
+      }
+    }
+  }
+}

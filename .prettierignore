@@ -9,3 +9,5 @@ package-lock.json
 next-env.d.ts
 *.db
 *.db-journal
+infra/**/*.json
+!infra/bicepconfig.json

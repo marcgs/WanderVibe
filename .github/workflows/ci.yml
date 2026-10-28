@@ -17,9 +17,6 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: write
     env:
       DATABASE_URL: postgresql://wandervibe:wandervibe@localhost:5432/wandervibe
     services:
@@ -90,9 +87,6 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    permissions:
-      contents: read
-      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -2,7 +2,7 @@
 
 WanderVibe is a personal trip-planning web app. This repository is the project foundation: the Next.js app, PostgreSQL, tests, and a production container image. Authentication is not implemented yet; accounts and per-user trips arrive in story #15.
 
-The intended host is Azure Container Apps. Azure infrastructure and deploy workflows are not in this repository yet. See [ADR-0001](docs/adr/0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` opt out with `connection()`.
+The intended host is Azure Container Apps. Azure infrastructure and deploy workflows are not in this repository yet. See [ADR-0001](docs/adr/ADR-0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` opt out with `connection()`.
 
 ## Prerequisites
 

@@ -1,0 +1,11 @@
+.next
+node_modules
+coverage
+playwright-report
+test-results
+blob-report
+src/generated
+package-lock.json
+next-env.d.ts
+*.db
+*.db-journal

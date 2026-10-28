@@ -12,9 +12,8 @@ param tags object
 @maxValue(730)
 param retentionInDays int = 30
 
-@description('Daily ingestion cap in GB. Limits cost for a personal app.')
-@minValue(1)
-param dailyQuotaGb int = 1
+@description('Daily ingestion cap in GB. 0.2 is enough for a personal app and stays inside the free grant in normal use.')
+param dailyQuotaGb string = '0.2'
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
   name: name
@@ -26,7 +25,7 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
     }
     retentionInDays: retentionInDays
     workspaceCapping: {
-      dailyQuotaGb: dailyQuotaGb
+      dailyQuotaGb: json(dailyQuotaGb)
     }
     publicNetworkAccessForIngestion: 'Enabled'
     publicNetworkAccessForQuery: 'Enabled'

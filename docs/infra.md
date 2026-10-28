@@ -2,7 +2,7 @@
 
 WanderVibe's Azure resources are Bicep in [`infra/`](../infra). `infra/main.bicep` composes the modules in `infra/modules/`. Parameter files `infra/main.staging.bicepparam` and `infra/main.prod.bicepparam` target Switzerland North. This repository does not deploy from CI. Story #14 adds that pipeline. The decisions are in [ADR-0002](adr/ADR-0002-azure-hosting.md).
 
-There is no Azure subscription in CI. CI compiles and lints the templates with `az bicep build` and `az bicep lint`. It does not create resources.
+There is no Azure subscription in CI. CI downloads Bicep CLI 0.48.1, checks its SHA-256, and runs `bicep build` and `bicep lint`. It does not create resources.
 
 ## Resources
 
@@ -17,7 +17,7 @@ Each environment gets its own resource group.
 | PostgreSQL Flexible Server | `psql-wv-<stg\|prd>-<suffix>`                 | Burstable `Standard_B1ms`, 32 GiB, backup 7 days |
 | Database                   | `wandervibe`                                  | On that server                                   |
 | Key Vault                  | `kvwv<stg\|prd><suffix>`                      | Standard, RBAC, no access policies               |
-| Log Analytics              | `log-wv-<environment>`                        | PerGB2018, 30-day retention, 1 GB daily cap      |
+| Log Analytics              | `log-wv-<environment>`                        | PerGB2018, 30-day retention, 0.2 GB daily cap    |
 | Application Insights       | `appi-wv-<environment>`                       | Workspace-based                                  |
 | Managed identity           | `id-wv-<environment>`                         | User-assigned                                    |
 
@@ -32,24 +32,19 @@ The Container App uses a user-assigned managed identity.
 - **AcrPull** on the registry. The registry admin user is off, so there is no registry password.
 - **Key Vault Secrets User** on the vault. The identity can read secret values and cannot manage the vault.
 
-Key Vault authorization is Azure RBAC. The template does not set access policies.
-
-The principal that runs the deployment receives **Key Vault Secrets Officer** so the same deployment can write secrets. That object id is `AZURE_DEPLOYER_OBJECT_ID`. A signed-in user is principal type `User`. A service principal would be `ServicePrincipal` (`deployerPrincipalType` in the parameter file).
+Key Vault authorization is Azure RBAC. The template does not set access policies, and it does not grant the deployer a data-plane role. Writing the secret resources is a control-plane operation. Owner or Contributor on the resource group is enough. A standing Key Vault Secrets Officer assignment would also allow that principal to read every secret, including the database password. Grant that only when someone needs a break-glass read, and do it outside this template.
 
 ## Secrets
 
 No secret values are in the Bicep files or the parameter files.
 
-At deploy time the shell provides:
-
-- `POSTGRES_ADMIN_PASSWORD` — URL-safe, 16 to 128 characters. `openssl rand -hex 24` is a good fit. The template does not URL-encode the password, so characters such as `@`, `:`, `/`, and `#` would break the connection string.
-- `AZURE_DEPLOYER_OBJECT_ID` — object id of the deployer. Not a secret.
+At deploy time the shell provides `POSTGRES_ADMIN_PASSWORD`. It must be 16 to 128 characters and meet Azure's password rules (mix of upper case, lower case, numbers, and symbols). The template URL-encodes it, so characters such as `@`, `:`, `/`, and `#` are safe.
 
 The template stores these Key Vault secrets and gives them to the Container App as Key Vault references:
 
 | Secret                                  | Container App variable                  | Value                                                  |
 | --------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
-| `database-url`                          | `DATABASE_URL`                          | Postgres connection string with `sslmode=require`      |
+| `database-url`                          | `DATABASE_URL`                          | Postgres connection string with `sslmode=verify-full`  |
 | `applicationinsights-connection-string` | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Workspace-based Application Insights connection string |
 
 The app reads `DATABASE_URL` today. It does not read the Application Insights variable until story #16. The reference is still created here so that value is never a plain environment variable or a file in git.
@@ -63,7 +58,7 @@ After a successful deployment the password lives in the `database-url` secret. Y
 | `GET /api/health` | The process is up. It does not touch Postgres.             | `200` and `{ "status": "ok" }`                                             |
 | `GET /api/ready`  | The container completed `SELECT 1` against `DATABASE_URL`. | `200` and `{ "status": "ok" }`, or `503` and `{ "status": "unavailable" }` |
 
-Neither response includes host names, SQL, stack traces, or credentials. Platform startup, liveness, and readiness probes all call `/api/health` on port 3000. A database outage must not restart the replica. Story #14's deploy smoke test can call `https://<container-app-fqdn>/api/ready` when it needs proof of a real database round-trip. `/api/health` stays the process check from story #1.
+Neither response includes host names, SQL, stack traces, or credentials. The route stops waiting after 2.5 seconds and returns the same 503. Startup and liveness probes call `/api/health` on port 3000. A liveness failure restarts the replica, so that probe does not touch Postgres. The readiness probe calls `/api/ready` with a 5 second timeout. A readiness failure only takes the replica out of traffic. Story #14 can call `https://<container-app-fqdn>/api/ready` after deploy. `/api/health` stays the process check from story #1.
 
 ## One-time setup
 
@@ -81,14 +76,13 @@ az group create --name rg-wandervibe-staging --location switzerlandnorth
 az group create --name rg-wandervibe-prod --location switzerlandnorth
 ```
 
-Export the deploy-time values in the shell you will use for `what-if` and `create`:
+Export the database password in the shell you will use for `what-if` and `create`:
 
 ```bash
-export POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
-export AZURE_DEPLOYER_OBJECT_ID="$(az ad signed-in-user show --query id --output tsv)"
+export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 ```
 
-Use a different password for production than for staging. Keep each value until that environment's deployment has written Key Vault.
+Use a different password for production than for staging. Keep the value until that environment's deployment has written Key Vault.
 
 ## Preview
 
@@ -108,32 +102,51 @@ az deployment group what-if \
 
 ## First deployment
 
-Staging:
+The same template creates the registry and the Container App, so an image cannot exist on the first run. Deploy the platform without the app, publish an image, then deploy the app. `deployContainerApp` defaults to true. The first command sets it to false.
+
+Staging, from the repository root:
 
 ```bash
 az deployment group create \
   --name wandervibe-staging \
   --resource-group rg-wandervibe-staging \
-  --parameters infra/main.staging.bicepparam
+  --parameters infra/main.staging.bicepparam \
+  --parameters deployContainerApp=false
 ```
 
-Production:
+The outputs include `containerRegistryName` and `containerRegistryLoginServer`. `containerAppName` and `containerAppFqdn` are empty on this run. Build the image in the registry. `<sha>` is any tag you choose; a git commit SHA is a good one.
+
+```bash
+sha="$(git rev-parse --short HEAD)"
+az acr build \
+  --registry "<containerRegistryName>" \
+  --image "wandervibe:${sha}" \
+  .
+```
+
+`az acr login` also works with the admin user disabled. It uses your Entra token. Disabling the admin user only turns off the registry username and password. The account that pushes needs a role that can push images, such as AcrPush, Owner, or Contributor:
+
+```bash
+az acr login --name "<containerRegistryName>"
+docker build --tag "<containerRegistryLoginServer>/wandervibe:${sha}" .
+docker push "<containerRegistryLoginServer>/wandervibe:${sha}"
+```
+
+Create the Container App against that tag. The default of `deployContainerApp` is true, so this run creates the app:
 
 ```bash
 az deployment group create \
-  --name wandervibe-prod \
-  --resource-group rg-wandervibe-prod \
-  --parameters infra/main.prod.bicepparam
+  --name wandervibe-staging \
+  --resource-group rg-wandervibe-staging \
+  --parameters infra/main.staging.bicepparam \
+  --parameters containerImageTag="${sha}"
 ```
 
-The deployment prints outputs: registry login server, Container App hostname, Key Vault URI, Postgres hostname, and the secret names. It does not print the connection string.
+Repeat the same three steps for production with `rg-wandervibe-prod`, `infra/main.prod.bicepparam`, and a different password. The deployment prints the registry login server, Container App hostname, Key Vault URI, Postgres hostname, and the secret names. It does not print the connection string.
 
-Two first-run cases are expected:
+The platform deployment creates AcrPull and Key Vault Secrets User for the app identity. If the Container App revision cannot pull the image or read secrets, wait a minute and run the app deployment again. It is idempotent.
 
-- **Key Vault or registry access is denied on the first try.** Role assignments can take a minute to propagate. Re-run the same `az deployment group create` command. It is idempotent.
-- **The Container App revision is unhealthy.** The app image is `<login-server>/wandervibe:initial`, and that tag does not exist until an image is pushed. Story #14 pushes the commit SHA and deploys it. A manual push works too: build the repo image, `az acr login` is not available because the admin user is disabled, so push with an identity that has **AcrPush**. Probes already point at `/api/health`. Re-run the deployment after the tag exists if Azure marked the deployment failed.
-
-`/api/ready` stays unavailable until two more things are true: the running image is this app, and story #14 (or a manual step) has applied `prisma migrate deploy` against that database. The readiness check only runs `SELECT 1`, so it does not require the Trip table, but the app still needs migrations before it stores trips.
+`/api/ready` returns 200 once the running image is this app and Postgres accepts `SELECT 1`. It does not require the Trip table. The app still needs `prisma migrate deploy` before it stores trips. Story #14 runs that migration. Startup and liveness probes call `/api/health`. The readiness probe calls `/api/ready`.
 
 ## What this does not do
 

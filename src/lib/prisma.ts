@@ -11,7 +11,12 @@ function createPrismaClient() {
     );
   }
 
-  const adapter = new PrismaPg({ connectionString });
+  // node-pg ignores connect_timeout in the URL. These are the JS client's timeouts.
+  const adapter = new PrismaPg({
+    connectionString,
+    connectionTimeoutMillis: 3000,
+    query_timeout: 2500,
+  });
   return new PrismaClient({ adapter });
 }
 

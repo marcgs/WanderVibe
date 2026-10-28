@@ -1,6 +1,7 @@
 # Production image for Azure Container Apps.
-# Liveness probe: GET /api/health on port 3000.
-# Database readiness: GET /api/ready. The body is only ok or unavailable.
+# Startup and liveness: GET /api/health on port 3000.
+# Readiness: GET /api/ready. The route returns within 2.5s.
+# The body is only ok or unavailable.
 # The runtime image has no Prisma CLI. Apply migrations with
 # `prisma migrate deploy` in the deploy workflow (story #14).
 #

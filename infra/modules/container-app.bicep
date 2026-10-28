@@ -43,10 +43,18 @@ param keyVaultSecrets keyVaultSecret[]
 @description('Environment variables whose values are Key Vault secret references.')
 param secretEnvironmentVariables secretEnvironmentVariable[]
 
-// Platform probes hit /api/health only. That route does not touch Postgres, so a
-// database outage does not restart the replica. The database round-trip is GET /api/ready.
+// Startup and liveness stay on /api/health. A liveness failure restarts the replica,
+// so that probe must not depend on Postgres.
 var healthProbeHttp = {
   path: '/api/health'
+  port: 3000
+  scheme: 'HTTP'
+}
+
+// Readiness only removes the replica from ingress. /api/ready returns within 2.5s,
+// so this timeout is larger than that bound.
+var readyProbeHttp = {
+  path: '/api/ready'
   port: 3000
   scheme: 'HTTP'
 }
@@ -126,7 +134,7 @@ resource app 'Microsoft.App/containerApps@2026-01-01' = {
               timeoutSeconds: 5
               failureThreshold: 3
               successThreshold: 1
-              httpGet: healthProbeHttp
+              httpGet: readyProbeHttp
             }
           ]
         }

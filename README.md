@@ -57,7 +57,7 @@ docker run --rm -p 3000:3000 \
   wandervibe
 ```
 
-Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps probe `GET /api/health` on port 3000. `GET /api/ready` is the database round-trip for a deploy smoke test. Apply production migrations with `prisma migrate deploy` in the deploy workflow (story #14). Continuous integration builds this image and does not push it.
+Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps use `GET /api/health` for startup and liveness, and `GET /api/ready` for readiness. Apply production migrations with `prisma migrate deploy` in the deploy workflow (story #14). Continuous integration builds this image and does not push it.
 
 ## Checks
 
@@ -106,24 +106,26 @@ npx prisma migrate dev
 
 - The `verify` job starts Postgres 17.11, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
 - The `image` job builds the Docker image, checks that `/api/health` returns 200, and checks that `/api/ready` returns 503 without a database. It does not push the image.
-- The `bicep` job installs Azure CLI and Bicep 0.48.1, then runs `az bicep build` and `az bicep lint` on `infra/`. It does not deploy.
+- The `bicep` job downloads Bicep CLI 0.48.1, checks its SHA-256, then runs `bicep build` and `bicep lint` on `infra/`. It does not deploy.
 
 ## Infrastructure
 
-Manual deployment of staging and production is documented in [docs/infra.md](docs/infra.md). Short version, after `az login` and with `POSTGRES_ADMIN_PASSWORD` and `AZURE_DEPLOYER_OBJECT_ID` exported:
+Manual deployment of staging and production is documented in [docs/infra.md](docs/infra.md). The first deployment leaves the Container App out, because the registry is empty. After `az login`, export `POSTGRES_ADMIN_PASSWORD` and:
 
 ```bash
 az group create --name rg-wandervibe-staging --location switzerlandnorth
 az deployment group what-if \
   --resource-group rg-wandervibe-staging \
-  --parameters infra/main.staging.bicepparam
+  --parameters infra/main.staging.bicepparam \
+  --parameters deployContainerApp=false
 az deployment group create \
   --name wandervibe-staging \
   --resource-group rg-wandervibe-staging \
-  --parameters infra/main.staging.bicepparam
+  --parameters infra/main.staging.bicepparam \
+  --parameters deployContainerApp=false
 ```
 
-Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. Do not commit the database password.
+Then `az acr build` (or `az acr login` and `docker push`) and deploy again with `containerImageTag` set to that tag. Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. Do not commit the database password. `az acr login` uses an Entra token. It works with the registry admin user disabled.
 
 ## Stack
 

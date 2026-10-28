@@ -20,22 +20,10 @@ param nameSuffix string = ''
 param postgresAdminLogin string
 
 @secure()
-@description('PostgreSQL administrator password. Set POSTGRES_ADMIN_PASSWORD at deploy time. Do not put the value in a parameter file. Use a URL-safe password (hex is safe), 16 to 128 characters.')
+@description('PostgreSQL administrator password. Set POSTGRES_ADMIN_PASSWORD at deploy time. Do not put the value in a parameter file. 16 to 128 characters. The template URL-encodes it.')
 @minLength(16)
 @maxLength(128)
 param postgresAdminPassword string
-
-@description('Object id of the principal running the deployment. It receives Key Vault Secrets Officer. Set AZURE_DEPLOYER_OBJECT_ID. Not a secret.')
-@minLength(1)
-param deployerPrincipalId string
-
-@description('Principal type of deployerPrincipalId. A signed-in user is User. A GitHub OIDC app registration is ServicePrincipal.')
-@allowed([
-  'User'
-  'ServicePrincipal'
-  'Group'
-])
-param deployerPrincipalType string = 'User'
 
 @description('Minimum Container App replicas. The staging parameter file sets 0.')
 @minValue(0)
@@ -50,10 +38,13 @@ param maxReplicas int
 @description('Repository name inside the container registry.')
 param containerImageName string = 'wandervibe'
 
-@description('Image tag in the container registry. Story #14 replaces this with the commit SHA. The tag does not exist until an image is pushed.')
+@description('Image tag in the container registry. Pass the tag published by az acr build. The default does not exist until an image is pushed.')
 @minLength(1)
 @maxLength(128)
 param containerImageTag string = 'initial'
+
+@description('Create the Container App. Set false on the first deployment, before an image exists in the registry.')
+param deployContainerApp bool = true
 
 var envShort = environmentName == 'prod' ? 'prd' : 'stg'
 var suffix = nameSuffix == '' ? take(uniqueString(resourceGroup().id), 8) : nameSuffix
@@ -120,8 +111,6 @@ module keyVault 'modules/key-vault.bicep' = {
     location: location
     tags: tags
     appIdentityPrincipalId: identity.outputs.principalId
-    deployerPrincipalId: deployerPrincipalId
-    deployerPrincipalType: deployerPrincipalType
   }
 }
 
@@ -143,8 +132,10 @@ module databaseUrlSecret 'modules/key-vault-secret.bicep' = {
     vaultName: keyVault.outputs.name
     secretName: databaseUrlSecretName
     // The password is a secure parameter, so this string stays secure.
-    // connect_timeout keeps a down database from hanging the readiness check.
-    secretValue: 'postgresql://${postgresAdminLogin}:${postgresAdminPassword}@${postgres.outputs.fqdn}:5432/${databaseName}?sslmode=require&connect_timeout=5'
+    // uriComponent encodes it. sslmode=verify-full matches what node-pg 8 already
+    // does for "require", without the warning. Node's CA store includes
+    // DigiCert Global Root G2, which signs Azure Flexible Server certificates.
+    secretValue: 'postgresql://${postgresAdminLogin}:${uriComponent(postgresAdminPassword)}@${postgres.outputs.fqdn}:5432/${databaseName}?sslmode=verify-full'
   }
 }
 
@@ -167,7 +158,7 @@ module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
   }
 }
 
-module containerApp 'modules/container-app.bicep' = {
+module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
   name: 'container-app'
   params: {
     name: containerAppName
@@ -208,11 +199,11 @@ output environmentName string = environmentName
 @description('Resource group the template was deployed to.')
 output resourceGroupName string = resourceGroup().name
 
-@description('Container App name.')
-output containerAppName string = containerApp.outputs.name
+@description('Container App name. Empty when deployContainerApp is false.')
+output containerAppName string = containerApp.?outputs.name ?? ''
 
-@description('Public hostname of the Container App. Smoke tests use https://<this host>.')
-output containerAppFqdn string = containerApp.outputs.fqdn
+@description('Public hostname of the Container App. Empty when deployContainerApp is false. Smoke tests use https://<this host>.')
+output containerAppFqdn string = containerApp.?outputs.fqdn ?? ''
 
 @description('Container registry name.')
 output containerRegistryName string = registry.outputs.name

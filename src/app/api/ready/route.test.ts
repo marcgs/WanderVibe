@@ -1,5 +1,5 @@
 import { connection } from "next/server";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { GET } from "./route";
 
 const { queryRaw } = vi.hoisted(() => ({
@@ -20,6 +20,10 @@ beforeEach(() => {
   queryRaw.mockReset();
   vi.mocked(connection).mockClear();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 test("ready endpoint returns ok without the query result", async () => {
@@ -54,4 +58,20 @@ test("ready endpoint hides database failures", async () => {
   expect(vi.mocked(console.error).mock.calls.flat().join(" ")).not.toContain(
     leaked,
   );
+});
+
+test("ready endpoint returns 503 when the query never finishes", async () => {
+  vi.useFakeTimers();
+  queryRaw.mockReturnValue(new Promise(() => undefined));
+
+  const pending = GET();
+  await vi.advanceTimersByTimeAsync(2_500);
+  const response = await pending;
+  const body = await response.text();
+
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(JSON.parse(body)).toEqual({ status: "unavailable" });
+  expect(body).not.toContain("timeout");
+  expect(console.error).toHaveBeenCalledWith("Readiness check failed");
 });

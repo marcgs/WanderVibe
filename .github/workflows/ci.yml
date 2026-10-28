@@ -138,24 +138,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Azure CLI
-        run: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-      - name: Install Bicep CLI
+      - name: Install pinned Bicep CLI
         run: |
-          az config set bicep.use_binary_from_path=false
-          az bicep install --version v0.48.1
-          az bicep version
+          version="v0.48.1"
+          sha256="b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+          curl -fsSL -o "${RUNNER_TEMP}/bicep" "https://github.com/Azure/bicep/releases/download/${version}/bicep-linux-x64"
+          echo "${sha256}  ${RUNNER_TEMP}/bicep" | sha256sum --check
+          mkdir -p "${HOME}/.local/bin"
+          install -m 755 "${RUNNER_TEMP}/bicep" "${HOME}/.local/bin/bicep"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Build Bicep
-        run: az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
+        run: bicep build infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
 
       - name: Lint Bicep
         run: |
           status=0
           while IFS= read -r file; do
             echo "Linting ${file}"
-            az bicep lint --file "${file}" || status=1
+            bicep lint "${file}" || status=1
           done < <(find infra -name '*.bicep' | sort)
           exit "${status}"
 
@@ -165,8 +166,11 @@ jobs:
             echo "Parameter files must read POSTGRES_ADMIN_PASSWORD from the environment."
             exit 1
           fi
+          if grep -n 'AZURE_DEPLOYER_OBJECT_ID' infra/*.bicepparam infra/*.bicep; then
+            echo "The template must not take a deployer object id."
+            exit 1
+          fi
           export POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
-          export AZURE_DEPLOYER_OBJECT_ID="00000000-0000-0000-0000-000000000000"
-          az bicep build-params --file infra/main.staging.bicepparam --outfile "${RUNNER_TEMP}/staging.parameters.json"
-          az bicep build-params --file infra/main.prod.bicepparam --outfile "${RUNNER_TEMP}/prod.parameters.json"
+          bicep build-params infra/main.staging.bicepparam --outfile "${RUNNER_TEMP}/staging.parameters.json"
+          bicep build-params infra/main.prod.bicepparam --outfile "${RUNNER_TEMP}/prod.parameters.json"
           rm -f "${RUNNER_TEMP}/staging.parameters.json" "${RUNNER_TEMP}/prod.parameters.json"

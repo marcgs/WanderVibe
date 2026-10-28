@@ -72,6 +72,25 @@ test leadingZeroOctet 'ingress-rules.bicep' = {
   }
 }
 
+test prefix15 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '203.0.113.0/15'
+    ]
+  }
+}
+
+test belowCustomFloor 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    minAllowedPrefixLength: 24
+    allowedIpRanges: [
+      '198.51.100.0/20'
+    ]
+  }
+}
+
 test extraSlash 'ingress-rules.bicep' = {
   params: {
     restrictPublicAccess: true

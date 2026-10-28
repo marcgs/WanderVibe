@@ -85,6 +85,8 @@ expect_rejection "to /32: 1.2.3.256/32"
 expect_rejection "to /32: 2001:db8::/64"
 expect_rejection "to /32: 01.2.3.4/32"
 expect_rejection "to /32: 1.2.3.4/32/1"
+expect_rejection "from /16 to /32: 203.0.113.0/15"
+expect_rejection "from /24 to /32: 198.51.100.0/20"
 # The bare address is followed by the runtime's period, so it does not match 1.2.3.4/00.
 if ! grep -E 'to /32: 1\.2\.3\.4([^0-9/]|$)' "${rejected_log}" >/dev/null; then
   echo "Missing rejection: 1.2.3.4"
@@ -120,8 +122,8 @@ if parameters["allowedIpRanges"].get("maxLength") != 32:
     raise SystemExit("allowedIpRanges must allow at most 32 CIDRs")
 if parameters["minAllowedPrefixLength"].get("defaultValue") != 16:
     raise SystemExit("minAllowedPrefixLength must default to 16")
-if parameters["minAllowedPrefixLength"].get("minValue") != 1:
-    raise SystemExit("minAllowedPrefixLength must not allow a /0 floor")
+if parameters["minAllowedPrefixLength"].get("minValue") != 8:
+    raise SystemExit("minAllowedPrefixLength must not allow a prefix shorter than /8")
 if parameters["minAllowedPrefixLength"].get("maxValue") != 32:
     raise SystemExit("minAllowedPrefixLength must cap at 32")
 

@@ -31,8 +31,8 @@ param maxReplicas int
 @maxLength(32)
 param allowedIpRanges string[] = []
 
-@description('Smallest prefix length accepted in allowedIpRanges. The default 16 rejects a short typo that would allow a large part of the IPv4 internet. 32 is the longest prefix.')
-@minValue(1)
+@description('Smallest prefix length accepted in allowedIpRanges. Defaults to 16. Cannot be set below 8, so a CLI override cannot allow a prefix shorter than /8. 32 is the longest prefix.')
+@minValue(8)
 @maxValue(32)
 param minAllowedPrefixLength int = 16
 

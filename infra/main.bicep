@@ -50,8 +50,8 @@ param deployContainerApp bool = true
 @maxLength(32)
 param allowedIpRanges string[] = []
 
-@description('Smallest prefix length accepted in allowedIpRanges. Defaults to 16. 32 is the longest prefix.')
-@minValue(1)
+@description('Smallest prefix length accepted in allowedIpRanges. Defaults to 16. Cannot be set below 8. 32 is the longest prefix.')
+@minValue(8)
 @maxValue(32)
 param minAllowedPrefixLength int = 16
 

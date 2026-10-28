@@ -37,6 +37,25 @@ test open 'ingress-rules.bicep' = {
   }
 }
 
+test prefix16 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '203.0.113.0/16'
+    ]
+  }
+}
+
+test prefix24 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    minAllowedPrefixLength: 24
+    allowedIpRanges: [
+      '198.51.100.0/24'
+    ]
+  }
+}
+
 test deduped 'ingress-rules.bicep' = {
   params: {
     restrictPublicAccess: true

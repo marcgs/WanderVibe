@@ -51,4 +51,8 @@ assert whenListed = restrictPublicAccess && length(normalizedIpRanges) == 2 ? (l
 
 assert whenDeduped = restrictPublicAccess && length(normalizedIpRanges) == 1 && length(allowedIpRanges) > 1 ? (length(ipSecurityRestrictions) == 1 && ipSecurityRestrictions[0].name == 'allow-0' && ipSecurityRestrictions[0].ipAddressRange == normalizedIpRanges[0] && ipSecurityRestrictions[0].action == 'Allow') : true
 
+assert whenPrefix16 = restrictPublicAccess && length(normalizedIpRanges) == 1 && normalizedIpRanges[0] == '203.0.113.0/16' ? (length(ipSecurityRestrictions) == 1 && ipSecurityRestrictions[0].ipAddressRange == '203.0.113.0/16' && ipSecurityRestrictions[0].action == 'Allow') : true
+
+assert whenCustomFloor = minAllowedPrefixLength == 24 && length(normalizedIpRanges) == 1 && normalizedIpRanges[0] == '198.51.100.0/24' ? (length(ipSecurityRestrictions) == 1 && ipSecurityRestrictions[0].ipAddressRange == '198.51.100.0/24' && ipSecurityRestrictions[0].action == 'Allow') : true
+
 assert whenOpen = !restrictPublicAccess ? empty(ipSecurityRestrictions) : true

@@ -48,7 +48,7 @@ Container Apps allows every client when `ipSecurityRestrictions` is empty, and e
 
 `192.0.2.1/32` is an RFC 5737 documentation address (TEST-NET-1). It is not a client. Every other IPv4 source misses the Allow rule. Container Apps answers HTTP 403 with the body `RBAC: access denied`. A request from an address on the list reaches the app, and `/api/health` returns 200.
 
-Each entry must be an IPv4 CIDR: exactly one `/`, four decimal octets from 0 to 255 with no leading zeros, and a prefix from `minAllowedPrefixLength` (default 16) through 32. A shorter prefix, a leading zero, or any other typo fails the deployment, and the error names the bad entries. Duplicate entries are removed. `@maxLength(32)` caps how many CIDRs the parameter accepts. That cap belongs to this repository. Container Apps does not document a hard rule limit. A longer list fails when the deployment runs. Startup, liveness, and readiness probes call the replica from inside the Container Apps environment. They do not pass through this list, so a closed allowlist does not fail the revision.
+Each entry must be an IPv4 CIDR: exactly one `/`, four decimal octets from 0 to 255 with no leading zeros, and a prefix from `minAllowedPrefixLength` (default 16) through 32. The parameter itself cannot be set below 8. A shorter prefix, a leading zero, or any other typo fails the deployment, and the error names the bad entries. Duplicate entries are removed. `@maxLength(32)` caps how many CIDRs the parameter accepts. That cap belongs to this repository. Container Apps does not document a hard rule limit. A longer list fails when the deployment runs. Startup, liveness, and readiness probes call the replica from inside the Container Apps environment. They do not pass through this list, so a closed allowlist does not fail the revision.
 
 ### Supplying addresses
 
@@ -148,29 +148,35 @@ permissions:
 
 `inputs.environment` is `staging` or `prod`, so the groups are `deploy-staging` and `deploy-prod`.
 
-Resolve the address in the same job that calls the app. Reject a response that is not an IPv4 literal before any rule is added. The second lookup is optional; use it when both services answer:
-
-```bash
-ip="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)"
-[[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "unexpected egress IP: $ip" >&2; exit 1; }
-cross="$(curl --fail --silent --show-error --ipv4 --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
-[ "$ip" = "$cross" ] || { echo "egress IP mismatch: $ip vs $cross" >&2; exit 1; }
-runner_cidr="${ip}/32"
-```
-
-Then deploy, add one rule for this run, smoke-test, and always remove that rule:
+Resolve the address in its own step, in the same job that calls the app. A shell variable does not survive into the next step, so write `RUNNER_CIDR` to `$GITHUB_ENV`. Reject a response that is not an IPv4 literal before that. The second lookup is optional; use it when both services answer:
 
 ```yaml
+- name: Resolve runner address
+  run: |
+    ip="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)"
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "unexpected egress IP: $ip" >&2; exit 1; }
+    cross="$(curl --fail --silent --show-error --ipv4 --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
+    [ "$ip" = "$cross" ] || { echo "egress IP mismatch: $ip vs $cross" >&2; exit 1; }
+    echo "RUNNER_CIDR=${ip}/32" >> "$GITHUB_ENV"
 - name: Deploy
-  run: az deployment group create ... # operator ranges only; no runner IP
+  id: deploy
+  run: |
+    az deployment group create ... # operator ranges only; no runner IP
+    restricted="$(az deployment group show \
+      --name "$DEPLOYMENT" \
+      --resource-group "$RG" \
+      --query properties.outputs.publicAccessRestricted.value \
+      --output tsv)"
+    echo "restricted=${restricted}" >> "$GITHUB_OUTPUT"
 - name: Allow this runner
+  if: steps.deploy.outputs.restricted == 'true'
   run: |
     az containerapp ingress access-restriction set \
       --resource-group "$RG" \
       --name "$APP" \
       --rule-name "gh-run-${GITHUB_RUN_ID}" \
       --action Allow \
-      --ip-address "${runner_cidr}"
+      --ip-address "${RUNNER_CIDR}"
 - name: Smoke test
   run: |
     code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 \
@@ -184,13 +190,27 @@ Then deploy, add one rule for this run, smoke-test, and always remove that rule:
 - name: Remove runner rule
   if: always()
   run: |
-    az containerapp ingress access-restriction remove \
+    rule="gh-run-${GITHUB_RUN_ID}"
+    present="$(az containerapp ingress access-restriction list \
       --resource-group "$RG" \
       --name "$APP" \
-      --rule-name "gh-run-${GITHUB_RUN_ID}"
+      --query "length([?name=='${rule}'])" \
+      --output tsv)"
+    if [ "${present}" != "0" ]; then
+      az containerapp ingress access-restriction remove \
+        --resource-group "$RG" \
+        --name "$APP" \
+        --rule-name "${rule}"
+    else
+      echo "${rule} not present; nothing to remove."
+    fi
 ```
 
-`if: always()` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled. That removal must not leave the rule list empty. An empty `ipSecurityRestrictions` list allows every client. The Bicep deploy has already installed the sentinel rule `closed-until-allowlist`, or the operator Allow rules, before the runner rule is added. Cleanup removes only `gh-run-${GITHUB_RUN_ID}`. It leaves the sentinel and the operator rules in place. The `set` command adds one Allow rule beside those rules. It does not replace the list, so two overlapping runs cannot wipe each other's operator ranges. `cancel-in-progress: false` keeps the running job alive long enough to reach the remove step. If the runner dies before that step, the next IaC deploy rewrites the list from the operator ranges, or from the sentinel when those ranges are empty, and the leftover runner rule is gone.
+Skip the temporary rule when the deployment output `publicAccessRestricted` is false. That is the state after story #15, once `restrictPublicAccess` is false and ingress is already open. Adding an Allow rule then would allow only this runner for the smoke test and lock everyone else out. Removing it would open ingress again. The `if` on the add step skips that. The remove step still runs. The rule is absent, the count is 0, and it prints that there is nothing to remove.
+
+`if: always()` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled. `az containerapp ingress access-restriction remove` raises `ValidationError` when that name is absent, which is what happens when Deploy, the lookup, or the add step fails first. Count the rule with `access-restriction list` and remove it only when the count is not 0. A real remove failure still fails the job. A missing rule does not. Counting the live list also covers an add that succeeded on the server and then errored in the client.
+
+That removal must not leave the rule list empty. An empty `ipSecurityRestrictions` list allows every client. The Bicep deploy has already installed the sentinel rule `closed-until-allowlist`, or the operator Allow rules, before the runner rule is added. Cleanup removes only `gh-run-${GITHUB_RUN_ID}`. It leaves the sentinel and the operator rules in place. `az containerapp ingress access-restriction set` reads the current rules, adds this one, and writes the whole `ipSecurityRestrictions` array back. Two overlapping runs can clobber that array. The `deploy-<env>` concurrency group, with `cancel-in-progress: false`, is what prevents that. It also keeps the running job alive long enough to reach the remove step. If the runner dies before that step, the next IaC deploy rewrites the list from the operator ranges, or from the sentinel when those ranges are empty, and the leftover runner rule is gone.
 
 Use the production resource group and Container App name for the production smoke test. The same steps apply.
 
@@ -200,7 +220,7 @@ The `actions` ranges published at `https://api.github.com/meta` are a poor fit. 
 
 ### Opening ingress after story #15
 
-Leave `restrictPublicAccess` true until story #15 is accepted. Before setting it to false, sign-in is enforced on every page except the sign-in page and `/api/health`. Unauthenticated page requests redirect to sign-in. Unauthenticated API requests return 401. `/api/health` stays anonymous so the platform probes keep working.
+Leave `restrictPublicAccess` true until story #15 is accepted. Before setting it to false, sign-in is enforced on every page except the sign-in page and `/api/health`. Unauthenticated page requests redirect to sign-in. Unauthenticated API requests return 401. `/api/health` stays anonymous so the platform probes keep working. Once that deploy reports `publicAccessRestricted` false, the story #14 smoke test skips the temporary runner rule, as described above.
 
 This deploy sends an empty rule list, which allows every client:
 

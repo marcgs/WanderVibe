@@ -50,42 +50,50 @@ for file in infra/main.staging.bicepparam infra/main.prod.bicepparam; do
   fi
 done
 
-echo "Running client-side ingress rule tests (experimental Bicep test framework, infra/tests only)."
-bicep test infra/tests/ingress-rules.test.bicep
-
-rejected_log="$(mktemp)"
-set +e
-bicep test infra/tests/ingress-rules-rejected.test.bicep >"${rejected_log}" 2>&1
-rejected_status=$?
-set -e
-if [[ "${rejected_status}" -eq 0 ]]; then
-  echo "Expected a /0 prefix and a value without a slash to fail."
-  cat "${rejected_log}"
-  rm -f "${rejected_log}"
-  exit 1
-fi
-if ! grep -F "must not contain a /0 prefix" "${rejected_log}" >/dev/null; then
-  echo "Missing /0 rejection."
-  cat "${rejected_log}"
-  rm -f "${rejected_log}"
-  exit 1
-fi
-if ! grep -F "must be an IPv4 CIDR" "${rejected_log}" >/dev/null; then
-  echo "Missing CIDR rejection."
-  cat "${rejected_log}"
-  rm -f "${rejected_log}"
-  exit 1
-fi
-rm -f "${rejected_log}"
-echo "Rejected allowlists failed closed."
-
 tmp="$(mktemp -d)"
 cleanup() {
   rm -rf "${tmp}"
 }
 trap cleanup EXIT
 
-build_log="$(mktemp)"
+echo "Running client-side ingress rule tests (experimental Bicep test framework, infra/tests only)."
+bicep test infra/tests/ingress-rules.test.bicep
+
+rejected_log="${tmp}/rejected.log"
+set +e
+bicep test infra/tests/ingress-rules-rejected.test.bicep >"${rejected_log}" 2>&1
+rejected_status=$?
+set -e
+if [[ "${rejected_status}" -eq 0 ]]; then
+  echo "Expected invalid CIDRs to fail."
+  cat "${rejected_log}"
+  exit 1
+fi
+expect_rejection() {
+  local needle="$1"
+  if ! grep -F "${needle}" "${rejected_log}" >/dev/null; then
+    echo "Missing rejection: ${needle}"
+    cat "${rejected_log}"
+    exit 1
+  fi
+}
+expect_rejection "to /32: 203.0.113.10/3"
+expect_rejection "to /32: 0.0.0.0/1"
+expect_rejection "to /32: 1.2.3.4/00"
+expect_rejection "to /32: foo/32"
+expect_rejection "to /32: 1.2.3.256/32"
+expect_rejection "to /32: 2001:db8::/64"
+expect_rejection "to /32: 01.2.3.4/32"
+expect_rejection "to /32: 1.2.3.4/32/1"
+# The bare address is followed by the runtime's period, so it does not match 1.2.3.4/00.
+if ! grep -E 'to /32: 1\.2\.3\.4([^0-9/]|$)' "${rejected_log}" >/dev/null; then
+  echo "Missing rejection: 1.2.3.4"
+  cat "${rejected_log}"
+  exit 1
+fi
+echo "Rejected allowlists failed closed."
+
+build_log="${tmp}/build.log"
 if ! bicep build infra/main.bicep --outfile "${tmp}/main.json" >"${build_log}" 2>&1; then
   cat "${build_log}"
   exit 1
@@ -94,7 +102,6 @@ if grep -i experimental "${build_log}"; then
   echo "infra/main.bicep must not enable experimental Bicep features."
   exit 1
 fi
-rm -f "${build_log}"
 
 python3 - "${tmp}/main.json" <<'PY'
 import json
@@ -102,7 +109,7 @@ import sys
 
 template = json.load(open(sys.argv[1]))
 parameters = template["parameters"]
-for name in ("allowedIpRanges", "restrictPublicAccess"):
+for name in ("allowedIpRanges", "restrictPublicAccess", "minAllowedPrefixLength"):
     if name not in parameters:
         raise SystemExit(f"missing parameter {name}")
 if parameters["allowedIpRanges"].get("defaultValue") != []:
@@ -111,6 +118,12 @@ if parameters["restrictPublicAccess"].get("defaultValue") is not True:
     raise SystemExit("restrictPublicAccess must default to true")
 if parameters["allowedIpRanges"].get("maxLength") != 32:
     raise SystemExit("allowedIpRanges must allow at most 32 CIDRs")
+if parameters["minAllowedPrefixLength"].get("defaultValue") != 16:
+    raise SystemExit("minAllowedPrefixLength must default to 16")
+if parameters["minAllowedPrefixLength"].get("minValue") != 1:
+    raise SystemExit("minAllowedPrefixLength must not allow a /0 floor")
+if parameters["minAllowedPrefixLength"].get("maxValue") != 32:
+    raise SystemExit("minAllowedPrefixLength must cap at 32")
 
 app = template["resources"]["containerApp"]["properties"]["template"]
 ingress = app["resources"]["app"]["properties"]["configuration"]["ingress"]
@@ -139,13 +152,15 @@ if '"action": "Allow"' not in rendered:
     raise SystemExit("missing Allow action")
 PY
 
-export POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+export POSTGRES_ADMIN_PASSWORD
 unset WANDER_ALLOWED_IP_RANGES || true
 
 check_params() {
   local file="$1"
   local expected="$2"
-  local outfile="${tmp}/$(basename "${file}").json"
+  local outfile
+  outfile="${tmp}/$(basename "${file}").json"
   bicep build-params "${file}" --outfile "${outfile}"
   python3 - "${outfile}" "${expected}" <<'PY'
 import json

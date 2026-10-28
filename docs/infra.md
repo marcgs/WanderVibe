@@ -48,14 +48,14 @@ Container Apps allows every client when `ipSecurityRestrictions` is empty, and e
 
 `192.0.2.1/32` is an RFC 5737 documentation address (TEST-NET-1). It is not a client. Every other IPv4 source misses the Allow rule. Container Apps answers HTTP 403 with the body `RBAC: access denied`. A request from an address on the list reaches the app, and `/api/health` returns 200.
 
-The platform property accepts IPv4 CIDR notation only. A single host is written with `/32`. A `/0` prefix fails the deployment, because that prefix matches every address. The parameter accepts at most 32 CIDRs. Startup, liveness, and readiness probes call the replica from inside the Container Apps environment. They do not pass through this list, so a closed allowlist does not fail the revision.
+Each entry must be an IPv4 CIDR: exactly one `/`, four decimal octets from 0 to 255 with no leading zeros, and a prefix from `minAllowedPrefixLength` (default 16) through 32. A shorter prefix, a leading zero, or any other typo fails the deployment, and the error names the bad entries. Duplicate entries are removed. `@maxLength(32)` caps how many CIDRs the parameter accepts. That cap belongs to this repository. Container Apps does not document a hard rule limit. A longer list fails when the deployment runs. Startup, liveness, and readiness probes call the replica from inside the Container Apps environment. They do not pass through this list, so a closed allowlist does not fail the revision.
 
 ### Supplying addresses
 
-The parameter files read the shell variable `WANDER_ALLOWED_IP_RANGES` (comma-separated CIDRs). When the variable is unset or empty, `allowedIpRanges` is `[]` and ingress stays closed. Set the variable in the shell you use for `what-if` and `create`. `${sha}` below is the image tag already published to the registry ([First deployment](#first-deployment)).
+The parameter files read the shell variable `WANDER_ALLOWED_IP_RANGES` (comma-separated CIDRs). When the variable is unset or empty, `allowedIpRanges` is `[]` and ingress stays closed. Each entry must pass the IPv4 check above, and more than 32 entries fails at deployment. Set the variable in the shell you use for `what-if` and `create`. `${sha}` below is the image tag already published to the registry ([First deployment](#first-deployment)).
 
 ```bash
-export WANDER_ALLOWED_IP_RANGES="$(curl --fail --silent --ipv4 https://api.ipify.org)/32"
+export WANDER_ALLOWED_IP_RANGES="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)/32"
 
 az deployment group create \
   --name wandervibe-staging \
@@ -92,16 +92,17 @@ fqdn="$(az deployment group show \
   --query properties.outputs.containerAppFqdn.value \
   --output tsv)"
 
-curl --silent --show-error --output /tmp/wandervibe-health.txt --write-out '%{http_code}\n' \
-  "https://${fqdn}/api/health"
+code="$(curl --silent --show-error --max-time 10 --output /tmp/wandervibe-health.txt --write-out '%{http_code}' \
+  "https://${fqdn}/api/health")"
+test "$code" = 403 && grep -q 'RBAC: access denied' /tmp/wandervibe-health.txt
 ```
 
-Expect `403`. The saved body is `RBAC: access denied`.
+`403` is the only passing result. A timeout is `000`, and that must fail the check. The saved body is `RBAC: access denied`.
 
-Deploy again with the network you are on included, then call the app from that same network:
+Deploy again with the network you are on included, then call the app from that same network. `--retry 2` covers a cold start. It does not retry a 403.
 
 ```bash
-export WANDER_ALLOWED_IP_RANGES="$(curl --fail --silent --ipv4 https://api.ipify.org)/32"
+export WANDER_ALLOWED_IP_RANGES="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)/32"
 
 az deployment group create \
   --name wandervibe-staging \
@@ -109,7 +110,9 @@ az deployment group create \
   --parameters infra/main.staging.bicepparam \
   --parameters containerImageTag="${sha}"
 
-curl --fail --silent "https://${fqdn}/api/health"
+code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 --output /tmp/wandervibe-health.txt --write-out '%{http_code}' \
+  "https://${fqdn}/api/health")"
+test "$code" = 200
 ```
 
 Expect HTTP 200 and `{ "status": "ok" }`.
@@ -127,35 +130,71 @@ There is no Azure subscription in CI, so CI checks the compiled template and the
 
 ### Smoke test for story #14
 
-Story #14, after each staging deploy and each production deploy, calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`. The job fails unless both return 200. A GitHub-hosted runner gets 403 until that job's egress address is on the allowlist. Ingress answers 403 before the container starts, so the cold-start retries from #14 do not turn a 403 into a 200. Add the runner address first. Retry only for the scale-to-zero cold start on staging (`minReplicas` is 0).
+Story #14, after each staging deploy and each production deploy, calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`. The job fails unless both return 200. A GitHub-hosted runner gets 403 until that job's egress address is allowed. Ingress answers 403 before the container starts, so a retry does not turn a 403 into a 200. Retry only after the runner rule exists, for the scale-to-zero cold start on staging (`minReplicas` is 0).
 
-Discover the address in the same job that runs the smoke test. The next job is another machine, with another egress address.
+The Bicep deployment uses operator ranges only. It does not include the runner address. Put those ranges in the GitHub Actions variable `WANDER_ALLOWED_IP_RANGES` on the `staging` and `production` environments. It is not a secret, and it stays out of git. The same 32-entry repository cap and the `/16`–`/32` prefix check apply when that deployment runs.
 
-```bash
-runner_cidr="$(curl --fail --silent --ipv4 https://api.ipify.org)/32"
-if [ -n "${WANDER_ALLOWED_IP_RANGES:-}" ]; then
-  export WANDER_ALLOWED_IP_RANGES="${WANDER_ALLOWED_IP_RANGES},${runner_cidr}"
-else
-  export WANDER_ALLOWED_IP_RANGES="${runner_cidr}"
-fi
+The deploy job needs only `id-token: write` and `contents: read`. One deploy per environment runs at a time. A new run waits. It does not cancel the run that still has to remove its runner rule:
+
+```yaml
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
 ```
 
-Put the operator ranges in a GitHub Actions variable named `WANDER_ALLOWED_IP_RANGES` on the `staging` and `production` environments. It is not a secret, and it stays out of git. The workflow exports that variable, appends the runner `/32`, and deploys in the same step. Each deployment replaces the whole allowlist, so the value has to include every range that should remain.
+`inputs.environment` is `staging` or `prod`, so the groups are `deploy-staging` and `deploy-prod`.
 
-GitHub-hosted runner addresses are shared with other customers. After the smoke test passes, deploy again with only the operator ranges so that shared `/32` comes off the list:
+Resolve the address in the same job that calls the app. Reject a response that is not an IPv4 literal before any rule is added. The second lookup is optional; use it when both services answer:
 
 ```bash
-export WANDER_ALLOWED_IP_RANGES="<operator ranges only>"
-az deployment group create \
-  --name wandervibe-staging \
-  --resource-group rg-wandervibe-staging \
-  --parameters infra/main.staging.bicepparam \
-  --parameters containerImageTag="${sha}"
+ip="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)"
+[[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "unexpected egress IP: $ip" >&2; exit 1; }
+cross="$(curl --fail --silent --show-error --ipv4 --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
+[ "$ip" = "$cross" ] || { echo "egress IP mismatch: $ip vs $cross" >&2; exit 1; }
+runner_cidr="${ip}/32"
 ```
 
-Use the production resource group, parameter file, and deployment name for the production smoke test. The same two-step shape applies.
+Then deploy, add one rule for this run, smoke-test, and always remove that rule:
 
-Alternative: run the smoke test on a self-hosted runner whose egress CIDR is already in the operator allowlist. The workflow then skips the runner `/32`. The check still calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`.
+```yaml
+- name: Deploy
+  run: az deployment group create ... # operator ranges only; no runner IP
+- name: Allow this runner
+  run: |
+    az containerapp ingress access-restriction set \
+      --resource-group "$RG" \
+      --name "$APP" \
+      --rule-name "gh-run-${GITHUB_RUN_ID}" \
+      --action Allow \
+      --ip-address "${runner_cidr}"
+- name: Smoke test
+  run: |
+    code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 \
+      --output /tmp/wandervibe-health.txt --write-out '%{http_code}' \
+      "https://${FQDN}/api/health")"
+    test "$code" = 200
+    code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 \
+      --output /tmp/wandervibe-ready.txt --write-out '%{http_code}' \
+      "https://${FQDN}/api/ready")"
+    test "$code" = 200
+- name: Remove runner rule
+  if: always()
+  run: |
+    az containerapp ingress access-restriction remove \
+      --resource-group "$RG" \
+      --name "$APP" \
+      --rule-name "gh-run-${GITHUB_RUN_ID}"
+```
+
+`if: always()` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled. That removal must not leave the rule list empty. An empty `ipSecurityRestrictions` list allows every client. The Bicep deploy has already installed the sentinel rule `closed-until-allowlist`, or the operator Allow rules, before the runner rule is added. Cleanup removes only `gh-run-${GITHUB_RUN_ID}`. It leaves the sentinel and the operator rules in place. The `set` command adds one Allow rule beside those rules. It does not replace the list, so two overlapping runs cannot wipe each other's operator ranges. `cancel-in-progress: false` keeps the running job alive long enough to reach the remove step. If the runner dies before that step, the next IaC deploy rewrites the list from the operator ranges, or from the sentinel when those ranges are empty, and the leftover runner rule is gone.
+
+Use the production resource group and Container App name for the production smoke test. The same steps apply.
+
+Alternative: run the smoke test on a self-hosted runner whose egress CIDR is already in the operator allowlist. Skip the temporary rule. The check still calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`.
 
 The `actions` ranges published at `https://api.github.com/meta` are a poor fit. They change, the list is large, and any GitHub-hosted runner could call the app. Leave them out of the repository.
 

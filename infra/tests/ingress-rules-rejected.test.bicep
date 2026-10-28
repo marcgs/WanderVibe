@@ -1,37 +1,82 @@
-// These evaluations must fail. check-access-restrictions.sh expects a non-zero exit.
+// These evaluations must fail. check-access-restrictions.sh expects each message below.
 
-test world 'ingress-rules.bicep' = {
+test prefix3 'ingress-rules.bicep' = {
   params: {
     restrictPublicAccess: true
     allowedIpRanges: [
-      ' 0.0.0.0/0 '
+      '203.0.113.10/3'
     ]
   }
 }
 
-test broad 'ingress-rules.bicep' = {
+test prefix1 'ingress-rules.bicep' = {
   params: {
     restrictPublicAccess: true
     allowedIpRanges: [
-      '10.0.0.0/0'
+      '0.0.0.0/1'
     ]
   }
 }
 
-test openWorld 'ingress-rules.bicep' = {
+test leadingZeroPrefix 'ingress-rules.bicep' = {
   params: {
-    restrictPublicAccess: false
+    restrictPublicAccess: true
     allowedIpRanges: [
-      '0.0.0.0/0'
+      '1.2.3.4/00'
     ]
   }
 }
 
-test hostOnly 'ingress-rules.bicep' = {
+test foo 'ingress-rules.bicep' = {
   params: {
     restrictPublicAccess: true
     allowedIpRanges: [
-      '203.0.113.10'
+      'foo/32'
+    ]
+  }
+}
+
+test octet256 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '1.2.3.256/32'
+    ]
+  }
+}
+
+test ipv6 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '2001:db8::/64'
+    ]
+  }
+}
+
+test bare 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '1.2.3.4'
+    ]
+  }
+}
+
+test leadingZeroOctet 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '01.2.3.4/32'
+    ]
+  }
+}
+
+test extraSlash 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '1.2.3.4/32/1'
     ]
   }
 }

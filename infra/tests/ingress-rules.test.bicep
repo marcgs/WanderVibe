@@ -36,3 +36,13 @@ test open 'ingress-rules.bicep' = {
     ]
   }
 }
+
+test deduped 'ingress-rules.bicep' = {
+  params: {
+    restrictPublicAccess: true
+    allowedIpRanges: [
+      '203.0.113.10/32'
+      ' 203.0.113.10/32 '
+    ]
+  }
+}

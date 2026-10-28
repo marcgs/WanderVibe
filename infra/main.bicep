@@ -46,6 +46,13 @@ param containerImageTag string = 'initial'
 @description('Create the Container App. Set false on the first deployment, before an image exists in the registry.')
 param deployContainerApp bool = true
 
+@description('IPv4 CIDRs allowed through Container App ingress while restrictPublicAccess is true. Empty closes ingress to every real client. Parameter files read WANDER_ALLOWED_IP_RANGES. Do not commit addresses.')
+@maxLength(32)
+param allowedIpRanges string[] = []
+
+@description('When true, ingress allows only allowedIpRanges. Stays true until story #15. Set false only after sign-in is enforced on every page except the sign-in page and /api/health.')
+param restrictPublicAccess bool = true
+
 var envShort = environmentName == 'prod' ? 'prd' : 'stg'
 var suffix = nameSuffix == '' ? take(uniqueString(resourceGroup().id), 8) : nameSuffix
 var databaseName = 'wandervibe'
@@ -190,6 +197,8 @@ module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
         secretRef: applicationInsightsSecretName
       }
     ]
+    allowedIpRanges: allowedIpRanges
+    restrictPublicAccess: restrictPublicAccess
   }
 }
 
@@ -243,3 +252,6 @@ output logAnalyticsWorkspaceName string = logAnalytics.outputs.name
 
 @description('Application Insights component name.')
 output applicationInsightsName string = applicationInsights.outputs.name
+
+@description('True while Container App ingress is limited to allowedIpRanges.')
+output publicAccessRestricted bool = restrictPublicAccess

@@ -8,6 +8,8 @@ Accepted
 
 2026-10-28
 
+Story #24 updated this decision the same day: ingress stays closed until sign-in.
+
 ## Context
 
 WanderVibe is a personal trip planner. ADR-0001 ships it as a non-root Next.js container with `GET /api/health` and PostgreSQL via `DATABASE_URL`. The epic hosts that container in Switzerland North and wants staging and production created the same way every time, at a small personal-use cost. Story #13 defines the resources. Story #14 deploys the image from CI. Custom domains, VNet integration, and private endpoints are out of scope.
@@ -59,6 +61,16 @@ The readiness probe requests `GET /api/ready` with `timeoutSeconds` of 5. A read
 
 `GET /api/ready` runs `SELECT 1` and returns `200` `{ "status": "ok" }` or `503` `{ "status": "unavailable" }`. The body has no host, SQL, or error text. The route gives up after 2.5 seconds, which is inside the probe timeout, so the probe observes the 503 instead of timing out on its own. The driver sets `connectionTimeoutMillis` to 3 seconds and a query timeout of 2.5 seconds. `connect_timeout` in the URL is not used, because node-postgres ignores it. Story #14 can call the same path after deploy.
 
+### Ingress stays closed until sign-in
+
+Story #15 adds sign-in. Until that story is accepted, every page and API on the hostname is available to whoever can open it. Staging and production both set `restrictPublicAccess` to true. `allowedIpRanges` is an array of IPv4 CIDRs and defaults to empty. The parameter files read `WANDER_ALLOWED_IP_RANGES` and commit no addresses.
+
+Container Apps allows every client when the restriction list is empty, and every rule in that list shares one action. While access is restricted, the template sends Allow rules only. An empty parameter becomes one Allow rule for `192.0.2.1/32` (RFC 5737 TEST-NET-1, not a client address). Every other IPv4 source receives HTTP 403 with the body `RBAC: access denied`. A non-empty parameter becomes one Allow rule per CIDR, and every other source still receives 403. A `/0` prefix fails the deployment. `restrictPublicAccess` set to false sends an empty rule list, which opens the hostname. That waits until sign-in is enforced on every page except the sign-in page and `/api/health`.
+
+Production uses the same flag and the same empty default, so it is not publicly exposed before #15. Story #14's smoke test calls the public hostname for `/api/health` and `/api/ready`. The deploy job adds that job's egress `/32` for the check and removes it on the following deploy. [docs/infra.md](../infra.md) has the commands. A self-hosted runner that is already on the operator list can run the same check without a temporary address.
+
+Platform probes call the replica directly. A closed public list leaves them healthy.
+
 ## Consequences
 
 - Operators create `rg-wandervibe-staging` and `rg-wandervibe-prod`, then run `az deployment group what-if` and `az deployment group create` as [docs/infra.md](../infra.md) describes. CI only compiles and lints.
@@ -67,7 +79,8 @@ The readiness probe requests `GET /api/ready` with `timeoutSeconds` of 5. A read
 - Staging can be cold. Production holds one small replica.
 - The 0.2 GB daily log cap can drop telemetry. That is accepted for a personal app.
 - Anyone who can open a connection from Azure can attempt a login. The password must be long and must stay in Key Vault.
-- Story #14 still has to grant its GitHub OIDC identity AcrPush, point the image tag at the commit SHA, run `prisma migrate deploy`, and smoke-check the app. This template does not do that.
+- Story #14 still has to grant its GitHub OIDC identity AcrPush, point the image tag at the commit SHA, run `prisma migrate deploy`, and smoke-check the app. The smoke check has to come from an allowlisted address. This template does not do that.
+- Until story #15, staging and production answer 403 to every real client unless the deploy passes `allowedIpRanges`. Opening the hostname is `restrictPublicAccess=false` after sign-in is enforced.
 
 ## Alternatives considered
 
@@ -77,3 +90,7 @@ The readiness probe requests `GET /api/ready` with `timeoutSeconds` of 5. A read
 - **Allow all IPs on Postgres (`0.0.0.0`–`255.255.255.255`).** Simpler to debug from a laptop, and it exposes the database to the whole internet. The Azure-services rule is the narrower option that still lets Container Apps connect.
 - **Entra-only database auth.** No password in the connection string, and Prisma would need a token refresh the app does not have yet. Password auth over TLS is the story #13 choice.
 - **Keep the readiness probe on `/api/health`.** The replica would stay in the load balancer while Postgres is down and would serve errors. Readiness does not restart the process, so pointing it at `/api/ready` only stops traffic. That is the behavior we want. Liveness stays on `/api/health` because a liveness failure does restart the replica.
+- **Deny `0.0.0.0/0` when the allowlist is empty.** That also yields 403, and a later Allow rule cannot sit beside a Deny rule. Azure requires one action for the whole list, so the switch takes a delete and then an add. One Allow list, with the documentation address standing in for an empty list, updates in a single deployment.
+- **Internal ingress, or an internal-only environment.** The public hostname would go away. Story #14 calls that hostname. Private networking stays out of scope.
+- **Commit an operator address in the parameter file.** Addresses change, and the repository would hold a real IP. Deploy-time values stay out of git.
+- **Allow every range in the GitHub `actions` list from `api.github.com/meta`.** Any GitHub-hosted runner could call the app. The smoke test adds one `/32` for the job that calls the health endpoints.

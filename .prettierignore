@@ -11,3 +11,4 @@ next-env.d.ts
 *.db-journal
 infra/**/*.json
 !infra/bicepconfig.json
+!infra/tests/bicepconfig.json

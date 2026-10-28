@@ -27,6 +27,13 @@ param minReplicas int
 @minValue(1)
 param maxReplicas int
 
+@description('IPv4 CIDRs allowed through ingress while restrictPublicAccess is true. Empty closes ingress to every real client. Set the value at deploy time. Do not commit addresses.')
+@maxLength(32)
+param allowedIpRanges string[] = []
+
+@description('When true, ingress allows only allowedIpRanges. Remains true until story #15. Set false only after sign-in is enforced on every page except the sign-in page and /api/health.')
+param restrictPublicAccess bool = true
+
 type keyVaultSecret = {
   name: string
   keyVaultUrl: string
@@ -59,6 +66,45 @@ var readyProbeHttp = {
   scheme: 'HTTP'
 }
 
+// ingress-ip-rules:begin
+// Azure accepts only Allow rules or only Deny rules, and an empty rule list allows
+// every client. An empty allowlist still sends one Allow rule for 192.0.2.1/32
+// (RFC 5737 TEST-NET-1, not a client). Every other IPv4 source misses that rule
+// and receives HTTP 403. restrictPublicAccess false is the only way to send [],
+// which Azure treats as allow all, and only after story #15.
+var normalizedIpRanges = filter(map(allowedIpRanges, range => trim(range)), range => !empty(range))
+
+var allowlistAccepted = !empty(filter(normalizedIpRanges, range => endsWith(range, '/0')))
+  ? fail(
+      'allowedIpRanges must not contain a /0 prefix. To open ingress after story #15, set restrictPublicAccess to false.'
+    )
+  : !empty(filter(normalizedIpRanges, range => !contains(range, '/')))
+      ? fail('Each allowedIpRanges entry must be an IPv4 CIDR, for example 203.0.113.10/32.')
+      : true
+
+var closedAllowlistRule = [
+  {
+    name: 'closed-until-allowlist'
+    description: 'Empty allowlist. This documentation address is not a client.'
+    ipAddressRange: '192.0.2.1/32'
+    action: 'Allow'
+  }
+]
+
+var allowIpRules = [
+  for (range, index) in normalizedIpRanges: {
+    name: 'allow-${index}'
+    description: 'Deploy-time allowlist entry.'
+    ipAddressRange: range
+    action: 'Allow'
+  }
+]
+
+var ipSecurityRestrictions = allowlistAccepted
+  ? (restrictPublicAccess ? (empty(normalizedIpRanges) ? closedAllowlistRule : allowIpRules) : [])
+  : []
+// ingress-ip-rules:end
+
 resource app 'Microsoft.App/containerApps@2026-01-01' = {
   name: name
   location: location
@@ -78,6 +124,8 @@ resource app 'Microsoft.App/containerApps@2026-01-01' = {
         targetPort: 3000
         transport: 'http'
         allowInsecure: false
+        // Platform probes call the replica directly. They do not pass through this list.
+        ipSecurityRestrictions: ipSecurityRestrictions
       }
       registries: [
         {

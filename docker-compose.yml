@@ -3,14 +3,14 @@ name: wandervibe
 
 services:
   postgres:
-    image: postgres:17
+    image: postgres:17.11
     restart: unless-stopped
     environment:
       POSTGRES_USER: wandervibe
       POSTGRES_PASSWORD: wandervibe
       POSTGRES_DB: wandervibe
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - wandervibe-postgres:/var/lib/postgresql/data
     healthcheck:

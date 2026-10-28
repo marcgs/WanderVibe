@@ -1,8 +1,8 @@
 # WanderVibe
 
-WanderVibe is a personal trip-planning web app for a single traveler. There are no accounts and no authentication. This repository is the project foundation: the Next.js app, PostgreSQL, tests, and a production container image.
+WanderVibe is a personal trip-planning web app. This repository is the project foundation: the Next.js app, PostgreSQL, tests, and a production container image. Authentication is not implemented yet; accounts and per-user trips arrive in story #15.
 
-The intended host is Azure Container Apps. Azure infrastructure and deploy workflows are not in this repository yet. See [ADR-0001](docs/adr/0001-application-stack.md).
+The intended host is Azure Container Apps. Azure infrastructure and deploy workflows are not in this repository yet. See [ADR-0001](docs/adr/0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` opt out with `connection()`.
 
 ## Prerequisites
 
@@ -12,29 +12,24 @@ The intended host is Azure Container Apps. Azure infrastructure and deploy workf
 
 ## Setup
 
-Start Postgres, install dependencies, and apply migrations:
+Copy the environment file, start Postgres, install dependencies, and apply migrations:
 
 ```bash
+cp .env.example .env
 docker compose up -d --wait
 npm install
 npx prisma migrate dev
 ```
 
-`npm install` generates the Prisma Client (`postinstall` runs `prisma generate`). `npx prisma migrate dev` creates the database schema from the committed migrations. Docker Compose publishes Postgres on `localhost:5432` with database, user, and password `wandervibe`. That password is for local development only.
-
-The default connection string is in `.env.example`:
+`.env.example` sets the local connection string:
 
 ```bash
 DATABASE_URL="postgresql://wandervibe:wandervibe@localhost:5432/wandervibe"
 ```
 
-Copy it to `.env` when you want to point the app at a different database:
+`npm install` generates the Prisma Client (`postinstall` runs `prisma generate`). `npx prisma migrate dev` creates the database schema from the committed migrations. Docker Compose publishes Postgres on `127.0.0.1:5432` only, with database, user, and password `wandervibe`. That password is for local development only.
 
-```bash
-cp .env.example .env
-```
-
-The app and the Prisma CLI read `DATABASE_URL`. When it is unset, they use the local Compose URL above.
+The app and the Prisma CLI require `DATABASE_URL`. They do not fall back to a built-in URL. Next.js reads `.env`. The Prisma CLI reads it through `prisma.config.ts`.
 
 ## Run the app
 
@@ -62,7 +57,7 @@ docker run --rm -p 3000:3000 \
   wandervibe
 ```
 
-Pass `DATABASE_URL` at runtime. The image does not contain a database password. Continuous integration builds this image and does not push it.
+Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps should probe `GET /api/health` on port 3000. Apply production migrations with `prisma migrate deploy` in the deploy workflow (stories #13 and #14). Continuous integration builds this image and does not push it.
 
 ## Checks
 
@@ -100,6 +95,7 @@ Playwright starts `npm run dev` on port 3000 when that port is free. If a dev se
 Prisma ORM stores data in PostgreSQL. The schema is `prisma/schema.prisma` and currently contains a minimal `Trip` model. Migrations live in `prisma/migrations` and are committed. Create or update the local database with:
 
 ```bash
+cp .env.example .env
 docker compose up -d --wait
 npx prisma migrate dev
 ```
@@ -108,7 +104,7 @@ npx prisma migrate dev
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on pull requests and on pushes to `main`.
 
-- The `verify` job starts Postgres 17, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
+- The `verify` job starts Postgres 17.11, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
 - The `image` job builds the Docker image and checks that `/api/health` returns 200. It does not push the image.
 
 ## Stack

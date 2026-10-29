@@ -39,7 +39,7 @@ if grep -nE 'restrictPublicAccess[[:space:]]*=[[:space:]]*false' infra/*.biceppa
   echo "Parameter files must keep restrictPublicAccess true until story #15."
   exit 1
 fi
-for file in infra/main.staging.bicepparam infra/main.prod.bicepparam; do
+for file in infra/main.staging.bicepparam infra/main.prod.bicepparam infra/cd.staging.bicepparam infra/cd.prod.bicepparam; do
   if ! grep -q "readEnvironmentVariable('WANDER_ALLOWED_IP_RANGES', '')" "${file}"; then
     echo "${file} must read WANDER_ALLOWED_IP_RANGES."
     exit 1
@@ -180,10 +180,14 @@ PY
 
 check_params infra/main.staging.bicepparam "[]"
 check_params infra/main.prod.bicepparam "[]"
+check_params infra/cd.staging.bicepparam "[]"
+check_params infra/cd.prod.bicepparam "[]"
 
 export WANDER_ALLOWED_IP_RANGES="203.0.113.10/32, 198.51.100.0/24,"
 check_params infra/main.staging.bicepparam '["203.0.113.10/32","198.51.100.0/24"]'
 check_params infra/main.prod.bicepparam '["203.0.113.10/32","198.51.100.0/24"]'
+check_params infra/cd.staging.bicepparam '["203.0.113.10/32","198.51.100.0/24"]'
+check_params infra/cd.prod.bicepparam '["203.0.113.10/32","198.51.100.0/24"]'
 
 export WANDER_ALLOWED_IP_RANGES=", ,"
 check_params infra/main.staging.bicepparam "[]"

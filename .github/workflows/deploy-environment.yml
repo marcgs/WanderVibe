@@ -1,0 +1,161 @@
+# Deploys one environment. Called by deploy.yml.
+# The OIDC subject is the GitHub Environment (staging or prod), not the branch.
+# Runner allow-rule: added after Deploy, only while publicAccessRestricted is true,
+# removed by if: always() when that rule is present.
+
+name: Deploy environment
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        description: staging or prod
+        required: true
+        type: string
+      parameter_file:
+        description: Bicep parameter file for infra/cd.bicep
+        required: true
+        type: string
+      deployment_name:
+        description: Azure deployment name
+        required: true
+        type: string
+      resource_group:
+        description: Resource group name
+        required: true
+        type: string
+      registry_name:
+        description: Container registry name
+        required: true
+        type: string
+      allowed_ip_ranges:
+        description: Operator CIDRs. Empty closes ingress. Never the runner address.
+        required: false
+        type: string
+        default: ""
+      image_tag:
+        description: Full commit SHA already pushed to the staging registry
+        required: true
+        type: string
+      import_from_login_server:
+        description: Staging registry login server. Empty when the image is already in this registry.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment_name }}
+    concurrency:
+      group: deploy-${{ inputs.environment_name }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+      PARAMETER_FILE: ${{ inputs.parameter_file }}
+      DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+      AZURE_RESOURCE_GROUP: ${{ inputs.resource_group }}
+      AZURE_CONTAINER_REGISTRY: ${{ inputs.registry_name }}
+      WANDER_ALLOWED_IP_RANGES: ${{ inputs.allowed_ip_ranges }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMPORT_FROM: ${{ inputs.import_from_login_server }}
+      APP_NAME: ca-wv-${{ inputs.environment_name }}
+      JOB_NAME: job-wv-${{ inputs.environment_name }}-migrate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require image tag
+        run: |
+          case "$ENVIRONMENT_NAME" in
+            staging|prod) ;;
+            *)
+              echo "environment must be staging or prod." >&2
+              exit 1
+              ;;
+          esac
+          bash scripts/require-image-tag.sh "$IMAGE_TAG"
+
+      - name: Install pinned Bicep CLI
+        run: |
+          version="v0.48.1"
+          sha256="b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+          curl -fsSL -o "${RUNNER_TEMP}/bicep" "https://github.com/Azure/bicep/releases/download/${version}/bicep-linux-x64"
+          echo "${sha256}  ${RUNNER_TEMP}/bicep" | sha256sum --check
+          mkdir -p "${HOME}/.local/bin"
+          install -m 755 "${RUNNER_TEMP}/bicep" "${HOME}/.local/bin/bicep"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          az config set bicep.use_binary_from_path=true
+          az version
+
+      - name: Log in to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Import images
+        if: inputs.import_from_login_server != ''
+        run: bash scripts/import-image.sh "$AZURE_CONTAINER_REGISTRY" "$IMPORT_FROM" "$IMAGE_TAG"
+
+      - name: Require images in this registry
+        run: |
+          az acr repository show --name "$AZURE_CONTAINER_REGISTRY" --image "wandervibe:${IMAGE_TAG}" --output none
+          az acr repository show --name "$AZURE_CONTAINER_REGISTRY" --image "wandervibe-migrate:${IMAGE_TAG}" --output none
+
+      - name: Deploy migration job
+        run: bash scripts/deploy-cd.sh "$PARAMETER_FILE" "${DEPLOYMENT_NAME}-job" "$AZURE_RESOURCE_GROUP" "$IMAGE_TAG" false true
+
+      - name: Apply database migrations
+        run: bash scripts/wait-for-migration.sh "$AZURE_RESOURCE_GROUP" "$JOB_NAME"
+
+      - name: Deploy
+        id: deploy
+        run: |
+          result="$(bash scripts/deploy-cd.sh "$PARAMETER_FILE" "$DEPLOYMENT_NAME" "$AZURE_RESOURCE_GROUP" "$IMAGE_TAG" true true)"
+          RESULT="$result" python3 - <<'PY'
+          import json, os, sys
+          data = json.loads(os.environ["RESULT"])
+          restricted = data.get("restricted")
+          fqdn = data.get("fqdn") or ""
+          if restricted not in ("true", "false"):
+              print(f"unexpected publicAccessRestricted value: {restricted!r}", file=sys.stderr)
+              sys.exit(1)
+          if not fqdn:
+              print("Container App hostname is empty. The app was not created.", file=sys.stderr)
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"restricted={restricted}\n")
+              handle.write(f"fqdn={fqdn}\n")
+          PY
+
+      # After Deploy, and only while ingress is restricted, so an ipify outage
+      # does not fail the job once story #15 opens the app.
+      - name: Resolve runner address
+        if: steps.deploy.outputs.restricted == 'true'
+        run: bash scripts/resolve-runner-cidr.sh >> "$GITHUB_ENV"
+
+      - name: Allow this runner
+        if: steps.deploy.outputs.restricted == 'true'
+        run: |
+          az containerapp ingress access-restriction set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$APP_NAME" \
+            --rule-name "gh-run-${GITHUB_RUN_ID}" \
+            --action Allow \
+            --ip-address "${RUNNER_CIDR}"
+
+      - name: Smoke test
+        run: bash scripts/smoke-test.sh "https://${FQDN}"
+        env:
+          FQDN: ${{ steps.deploy.outputs.fqdn }}
+
+      - name: Remove runner rule
+        if: always()
+        run: bash scripts/remove-runner-rule.sh "$AZURE_RESOURCE_GROUP" "$APP_NAME" "gh-run-${GITHUB_RUN_ID}"

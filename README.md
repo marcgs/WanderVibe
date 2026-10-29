@@ -2,7 +2,7 @@
 
 WanderVibe is a personal trip-planning web app. This repository is the project foundation: the Next.js app, PostgreSQL, tests, and a production container image. Authentication is not implemented yet; accounts and per-user trips arrive in story #15.
 
-The host is Azure Container Apps. Infrastructure is Bicep in [`infra/`](infra), described in [docs/infra.md](docs/infra.md) and [ADR-0002](docs/adr/ADR-0002-azure-hosting.md). The deploy workflow is not in this repository yet (story #14). See [ADR-0001](docs/adr/ADR-0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` and `/api/ready` opt out with `connection()`.
+The host is Azure Container Apps. Infrastructure is Bicep in [`infra/`](infra), described in [docs/infra.md](docs/infra.md) and [ADR-0002](docs/adr/ADR-0002-azure-hosting.md). Continuous deployment is [docs/deploy.md](docs/deploy.md) and [ADR-0003](docs/adr/ADR-0003-continuous-deployment.md). See [ADR-0001](docs/adr/ADR-0001-application-stack.md). `cacheComponents` and `partialPrefetching` are on so pages can use the App Router static shell; request-time routes such as `/api/health` and `/api/ready` opt out with `connection()`.
 
 ## Prerequisites
 
@@ -57,7 +57,7 @@ docker run --rm -p 3000:3000 \
   wandervibe
 ```
 
-Pass `DATABASE_URL` at runtime. The image does not contain a database password, and it does not include the Prisma CLI. Container Apps use `GET /api/health` for startup and liveness, and `GET /api/ready` for readiness. Apply production migrations with `prisma migrate deploy` in the deploy workflow (story #14). Continuous integration builds this image and does not push it.
+Pass `DATABASE_URL` at runtime. The image does not contain a database password, and the runtime stage does not include the Prisma CLI. The `migrate` stage does. Container Apps use `GET /api/health` for startup and liveness, and `GET /api/ready` for readiness. Continuous deployment runs `prisma migrate deploy` from that stage inside Azure. Continuous integration builds the runtime image and the migrate stage, and does not push them.
 
 ## Checks
 
@@ -105,12 +105,14 @@ npx prisma migrate dev
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on pull requests and on pushes to `main`.
 
 - The `verify` job starts Postgres 17.11, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
-- The `image` job builds the Docker image, checks that `/api/health` returns 200, and checks that `/api/ready` returns 503 without a database. It does not push the image.
-- The `bicep` job downloads Bicep CLI 0.48.1, checks its SHA-256, then runs `bicep build` and `bicep lint` on `infra/`. It also checks the ingress allowlist. It does not deploy.
+- The `image` job builds the Docker image and the `migrate` stage, checks that `/api/health` returns 200, and checks that `/api/ready` returns 503 without a database. It does not push the image.
+- The `bicep` job downloads Bicep CLI 0.48.1, checks its SHA-256, then runs `bicep build` and `bicep lint` on `infra/`. It also checks the ingress allowlist and the deploy workflow. It does not deploy.
+
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on pushes to `main`. Until the repository variables in [docs/deploy.md](docs/deploy.md) are set, it skips the deploy and stays green. It does not run on pull requests.
 
 ## Infrastructure
 
-Manual deployment of staging and production is documented in [docs/infra.md](docs/infra.md). The first deployment leaves the Container App out, because the registry is empty. After `az login`, export `POSTGRES_ADMIN_PASSWORD` and:
+The first deployment of staging and production is documented in [docs/infra.md](docs/infra.md). It leaves the Container App out, because the registry is empty. After that, merges to `main` deploy through [docs/deploy.md](docs/deploy.md). For the first deployment, after `az login`, export `POSTGRES_ADMIN_PASSWORD` and:
 
 ```bash
 az group create --name rg-wandervibe-staging --location switzerlandnorth

@@ -8,7 +8,8 @@ param postgresAdminPassword = readEnvironmentVariable('POSTGRES_ADMIN_PASSWORD')
 // Scale to zero when nobody is using staging.
 param minReplicas = 0
 param maxReplicas = 2
-param containerImageTag = 'initial'
+// Do not set containerImageTag here. Pass the commit SHA at deploy time.
+// An empty tag or initial is refused when deployContainerApp is true.
 // Comma-separated IPv4 CIDRs, supplied at deploy time. Unset or empty closes ingress.
 // Do not commit addresses.
 var allowedIpRangesFromEnv = readEnvironmentVariable('WANDER_ALLOWED_IP_RANGES', '')

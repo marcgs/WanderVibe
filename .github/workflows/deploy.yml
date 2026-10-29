@@ -1,0 +1,178 @@
+# Builds the image once, deploys it to staging, then to prod after the prod environment approves.
+# Skips those jobs when the repository variables in docs/deploy.md are unset, so this file
+# can merge before Azure is configured. Pull requests do not run this workflow.
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which environment to deploy
+        type: choice
+        options:
+          - both
+          - staging
+          - prod
+        default: both
+      image_tag:
+        description: Full commit SHA to redeploy. Empty builds and deploys this commit.
+        required: false
+        default: ""
+        type: string
+
+# One run at a time, so an older commit cannot finish deploying after a newer one.
+# cancel-in-progress stays false so a running job can still remove its runner rule.
+concurrency:
+  group: wandervibe-cd
+  cancel-in-progress: false
+
+# id-token is required at this level so the reusable deploy workflow can log in with OIDC.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      staging: ${{ steps.set.outputs.staging }}
+      prod: ${{ steps.set.outputs.prod }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide whether to deploy
+        id: set
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          STAGING_AZURE_RESOURCE_GROUP: ${{ vars.STAGING_AZURE_RESOURCE_GROUP }}
+          STAGING_AZURE_CONTAINER_REGISTRY: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
+          PROD_AZURE_RESOURCE_GROUP: ${{ vars.PROD_AZURE_RESOURCE_GROUP }}
+          PROD_AZURE_CONTAINER_REGISTRY: ${{ vars.PROD_AZURE_CONTAINER_REGISTRY }}
+          DEPLOY_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'both' }}
+        run: |
+          result="$(bash scripts/cd-enabled.sh)"
+          printf '%s\n' "$result" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$result"
+          if ! printf '%s\n' "$result" | grep -q '=true$'; then
+            echo "Azure CD variables are not set, or this target is disabled. Skipping deploy. See docs/deploy.md."
+          fi
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.staging == 'true' || needs.preflight.outputs.prod == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      login_server: ${{ steps.registry.outputs.login_server }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve image tag
+        id: tag
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || '' }}
+        run: bash scripts/resolve-image-tag.sh "$REQUESTED_TAG" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Registry
+        id: registry
+        env:
+          STAGING_AZURE_CONTAINER_REGISTRY: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
+          BUILD: ${{ steps.tag.outputs.build }}
+        run: |
+          login="$(az acr show --name "$STAGING_AZURE_CONTAINER_REGISTRY" --query loginServer --output tsv)"
+          echo "login_server=${login}" >> "$GITHUB_OUTPUT"
+          if [ "$BUILD" = "true" ]; then
+            az acr login --name "$STAGING_AZURE_CONTAINER_REGISTRY"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.tag.outputs.build == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push app image
+        if: steps.tag.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          # ACR rejects the default buildx provenance attestation.
+          provenance: false
+          sbom: false
+          tags: ${{ steps.registry.outputs.login_server }}/wandervibe:${{ steps.tag.outputs.image_tag }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Build and push migration image
+        if: steps.tag.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: migrate
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.registry.outputs.login_server }}/wandervibe-migrate:${{ steps.tag.outputs.image_tag }}
+          cache-from: type=gha,scope=migrate
+          cache-to: type=gha,mode=max,scope=migrate
+
+      - name: Require images in the staging registry
+        env:
+          STAGING_AZURE_CONTAINER_REGISTRY: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          az acr repository show --name "$STAGING_AZURE_CONTAINER_REGISTRY" --image "wandervibe:${IMAGE_TAG}" --output none
+          az acr repository show --name "$STAGING_AZURE_CONTAINER_REGISTRY" --image "wandervibe-migrate:${IMAGE_TAG}" --output none
+
+  deploy-staging:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.staging == 'true' && needs.build.result == 'success'
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment_name: staging
+      parameter_file: infra/cd.staging.bicepparam
+      deployment_name: wandervibe-staging
+      resource_group: ${{ vars.STAGING_AZURE_RESOURCE_GROUP }}
+      registry_name: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
+      allowed_ip_ranges: ${{ vars.STAGING_WANDER_ALLOWED_IP_RANGES }}
+      image_tag: ${{ needs.build.outputs.image_tag }}
+      import_from_login_server: ""
+
+  deploy-prod:
+    needs: [preflight, build, deploy-staging]
+    if: >-
+      always() &&
+      needs.preflight.outputs.prod == 'true' &&
+      needs.build.result == 'success' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped')
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment_name: prod
+      parameter_file: infra/cd.prod.bicepparam
+      deployment_name: wandervibe-prod
+      resource_group: ${{ vars.PROD_AZURE_RESOURCE_GROUP }}
+      registry_name: ${{ vars.PROD_AZURE_CONTAINER_REGISTRY }}
+      allowed_ip_ranges: ${{ vars.PROD_WANDER_ALLOWED_IP_RANGES }}
+      image_tag: ${{ needs.build.outputs.image_tag }}
+      import_from_login_server: ${{ needs.build.outputs.login_server }}

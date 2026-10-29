@@ -79,7 +79,7 @@ Platform probes call the replica directly. A closed public list leaves them heal
 - Staging can be cold. Production holds one small replica.
 - The 0.2 GB daily log cap can drop telemetry. That is accepted for a personal app.
 - Anyone who can open a connection from Azure can attempt a login. The password must be long and must stay in Key Vault.
-- Story #14 still has to grant its GitHub OIDC identity AcrPush, point the image tag at the commit SHA, run `prisma migrate deploy`, and smoke-check the app. The smoke check has to come from an allowlisted address. This template does not do that.
+- [ADR-0003](ADR-0003-continuous-deployment.md) grants the GitHub OIDC identity AcrPush and Contributor, passes the commit SHA as `containerImageTag`, runs `prisma migrate deploy` as a Container Apps job, and smoke-checks the app from an allowlisted address. This template still does not grant those CD roles, and it does not read Key Vault from the CD identity.
 - Until story #15, staging and production answer 403 to every real client unless the deploy passes `allowedIpRanges`. Opening the hostname is `restrictPublicAccess=false` after sign-in is enforced.
 
 ## Alternatives considered

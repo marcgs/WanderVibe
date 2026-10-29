@@ -144,17 +144,12 @@ az role assignment create \
 az role assignment create \
   --assignee-object-id "$prod_principal" \
   --assignee-principal-type ServicePrincipal \
-  --role AcrPull \
+  --role "Container Registry Data Importer and Data Reader" \
   --scope "$staging_acr_id"
 az role assignment create \
   --assignee-object-id "$prod_principal" \
   --assignee-principal-type ServicePrincipal \
   --role "Container Registry Data Importer and Data Reader" \
-  --scope "$prod_acr_id"
-az role assignment create \
-  --assignee-object-id "$prod_principal" \
-  --assignee-principal-type ServicePrincipal \
-  --role AcrPush \
   --scope "$prod_acr_id"
 az role assignment create \
   --assignee-object-id "$prod_principal" \
@@ -173,14 +168,13 @@ Every role assignment:
 | Key Vault Secrets User                           | `id-wv-prod`       | Prod Key Vault          | `infra/main.bicep`                                                     |
 | AcrPush                                          | `id-wv-cd-staging` | Staging registry        | This step                                                              |
 | Contributor                                      | `id-wv-cd-staging` | `rg-wandervibe-staging` | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
-| AcrPull                                          | `id-wv-cd-prod`    | Staging registry        | This step                                                              |
+| Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Staging registry        | This step                                                              |
 | Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
-| AcrPush                                          | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
 | Contributor                                      | `id-wv-cd-prod`    | `rg-wandervibe-prod`    | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
 
-`id-wv-cd-staging` can push to the staging registry and cannot push to the prod registry. `id-wv-cd-prod` can pull from the staging registry. It cannot push to that registry and it cannot import into it. It can push and import on the prod registry.
+`id-wv-cd-staging` can push to the staging registry and cannot push to the prod registry. Nothing in the workflow pushes to the prod registry, so `id-wv-cd-prod` is not granted AcrPush. It has Container Registry Data Importer and Data Reader on both registries, which is the role [Microsoft documents](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-import-images) for a same-tenant `az acr import` that passes the source registry resource id. On the staging registry that role adds `importImage/action`, so this identity can import an image into staging. It does not add push or delete there.
 
-The staging registry is Basic, so repository ABAC roles such as Container Registry Repository Reader do not apply. AcrPull is the read-only role. Its only action is `Microsoft.ContainerRegistry/registries/pull/read`. Container Registry Data Importer and Data Reader includes `Microsoft.ContainerRegistry/registries/importImage/action` on the registry where it is assigned, which would let this identity import images into staging. That role stays on the prod registry only. `az acr import --name <prod registry> --registry <staging registry resource id> --source <repository>:<tag>` runs the import on the prod registry and pulls the source with the caller's token. AcrPull on the source authorizes that pull. Do not assign the importer role to `id-wv-cd-prod` on the staging registry.
+Both registries set `roleAssignmentMode` to `LegacyRegistryPermissions`. This table depends on that mode. In ABAC repository-permission mode, AcrPull and AcrPush are not honored, and Contributor has no data-plane access. Microsoft documents that mode becoming the default, and the documentation does not limit it by registry tier.
 
 The app identity roles already exist from the bootstrap. The migration job uses that identity, so it can pull the migrate image and read `database-url`. Neither CD identity receives a Key Vault data-plane role.
 
@@ -193,7 +187,7 @@ Do not assign any of these to either CD identity:
 - User Access Administrator
 - Contributor on the other environment's resource group
 
-Contributor on that identity's own resource group deploys `infra/cd.bicep`, starts the job, and changes ingress rules. It is broader than the deploy needs. [#29](https://github.com/marcgs/WanderVibe/issues/29) replaces it. While it is assigned, AcrPush on the registry in the same resource group is redundant in non-ABAC mode, because Contributor already includes registry push and pull. The explicit AcrPush and importer roles stay so the registry rights are still named when Contributor is removed. Writing a Key Vault secret from Bicep is a control-plane operation and is not part of the CD deployment. `infra/cd.bicep` does not write secrets and does not create role assignments, so the CD identity does not need `Microsoft.Authorization/roleAssignments/write`.
+Contributor on that identity's own resource group deploys `infra/cd.bicep`, starts the job, and changes ingress rules. It is broader than the deploy needs. [#29](https://github.com/marcgs/WanderVibe/issues/29) replaces it. While `LegacyRegistryPermissions` is set, Contributor on the resource group that contains a registry already includes push, pull, and import on that registry. `id-wv-cd-staging` still has an explicit AcrPush assignment so the push right remains when Contributor is removed. `id-wv-cd-prod` has no AcrPush assignment: nothing pushes to the prod registry, and the importer role covers the import. Writing a Key Vault secret from Bicep is a control-plane operation and is not part of the CD deployment. `infra/cd.bicep` does not write secrets and does not create role assignments, so the CD identity does not need `Microsoft.Authorization/roleAssignments/write`.
 
 If you have to read or write a secret outside a Bicep deployment, grant Key Vault Secrets Officer to your user for that task and delete the assignment when you are done. A Privileged Identity Management eligible assignment is the same idea when the tenant has it. Do that on your user, not on the CD identity. [docs/infra.md](infra.md) explains why a standing Secrets Officer role can read the database password.
 
@@ -209,6 +203,8 @@ In the repository settings, create two environments before any deploy job runs. 
 - Required reviewers: none
 - Deployment branches: selected branch `main`
 - Environment variable `AZURE_CLIENT_ID`: client id of `id-wv-cd-staging`
+
+The build job selects this environment, so every workflow run creates a GitHub deployment record for `staging` before the Container App changes. A required reviewer or a wait timer added here later would block image builds as well as deploys.
 
 **prod**
 

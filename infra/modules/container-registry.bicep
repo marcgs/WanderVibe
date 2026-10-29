@@ -24,6 +24,9 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
     zoneRedundancy: 'Disabled'
+    // Legacy mode honors AcrPull and AcrPush. ABAC repository permissions ignore those roles,
+    // and Microsoft documents that mode becoming the default with no SKU restriction.
+    roleAssignmentMode: 'LegacyRegistryPermissions'
   }
 }
 
@@ -41,3 +44,4 @@ output id string = registry.id
 output name string = registry.name
 output loginServer string = registry.properties.loginServer
 output acrPullAssignmentName string = acrPull.name
+output roleAssignmentMode string = registry.properties.roleAssignmentMode

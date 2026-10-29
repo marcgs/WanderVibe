@@ -529,4 +529,49 @@ grep -q "Evaluation empty" "${rejected_log}" || fail "empty tag was not evaluate
 grep -q 'replicaTimeout: 600' infra/modules/migration-job.bicep
 grep -q 'MIGRATION_TIMEOUT_SECONDS:-720' scripts/wait-for-migration.sh
 
+python3 - <<'PY'
+import re
+from pathlib import Path
+
+deploy = Path("docs/deploy.md").read_text()
+adr = Path("docs/adr/ADR-0003-continuous-deployment.md").read_text()
+section = deploy.split("### 4. Role assignments", 1)[1].split("### 5.", 1)[0]
+blocks = section.split("az role assignment create")[1:]
+assignments = []
+for block in blocks:
+    assignee = re.search(r'--assignee-object-id "([^"]+)"', block)
+    role = re.search(r'--role (?:"([^"]+)"|(\S+))', block)
+    scope = re.search(r'--scope "([^"]+)"', block)
+    if not (assignee and role and scope):
+        raise SystemExit(f"could not parse a role assignment:\n{block}")
+    assignments.append((assignee.group(1), role.group(1) or role.group(2), scope.group(1)))
+
+expected = {
+    ("$staging_principal", "AcrPush", "$staging_acr_id"),
+    ("$staging_principal", "Contributor", "/subscriptions/${sub}/resourceGroups/rg-wandervibe-staging"),
+    ("$prod_principal", "AcrPull", "$staging_acr_id"),
+    ("$prod_principal", "Container Registry Data Importer and Data Reader", "$prod_acr_id"),
+    ("$prod_principal", "AcrPush", "$prod_acr_id"),
+    ("$prod_principal", "Contributor", "/subscriptions/${sub}/resourceGroups/rg-wandervibe-prod"),
+}
+if set(assignments) != expected:
+    raise SystemExit(f"role commands drifted:\n{assignments}")
+for assignee, role, scope in assignments:
+    if role == "Container Registry Data Importer and Data Reader" and scope == "$staging_acr_id":
+        raise SystemExit("the importer role on the staging registry can import into staging")
+
+def row_has(text, role, principal, scope):
+    return any(role in line and principal in line and scope in line for line in text.splitlines())
+
+for text, name in ((deploy, "docs/deploy.md"), (adr, "ADR-0003")):
+    if not row_has(text, "AcrPull", "`id-wv-cd-prod`", "Staging registry"):
+        raise SystemExit(f"{name} must give id-wv-cd-prod AcrPull on the staging registry")
+    if row_has(text, "Container Registry Data Importer and Data Reader", "`id-wv-cd-prod`", "Staging registry"):
+        raise SystemExit(f"{name} still grants the importer role on the staging registry")
+    if not row_has(text, "Container Registry Data Importer and Data Reader", "`id-wv-cd-prod`", "Prod registry"):
+        raise SystemExit(f"{name} must keep the importer role on the prod registry")
+    if not row_has(text, "AcrPush", "`id-wv-cd-prod`", "Prod registry"):
+        raise SystemExit(f"{name} must keep AcrPush on the prod registry")
+PY
+
 echo "Continuous deployment checks passed."

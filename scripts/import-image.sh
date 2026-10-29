@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Copy the app and migration images into this environment's registry. Does not rebuild them.
-# --registry is the source registry resource id. Same-tenant import uses Entra auth on that id.
+# --registry is the source registry resource id. Import runs on the destination.
+# The caller needs AcrPull on that source id, and import plus push on the destination.
 set -euo pipefail
 
 dest_registry="${1:?destination registry name}"

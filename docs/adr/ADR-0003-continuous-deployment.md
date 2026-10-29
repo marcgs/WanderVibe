@@ -49,12 +49,14 @@ Every `azure/login` step is in a job that sets `environment:`. `AZURE_CLIENT_ID`
 | ------------------------------------------------ | ------------------ | ----------------------- |
 | AcrPush                                          | `id-wv-cd-staging` | Staging registry        |
 | Contributor                                      | `id-wv-cd-staging` | `rg-wandervibe-staging` |
-| Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Staging registry        |
+| AcrPull                                          | `id-wv-cd-prod`    | Staging registry        |
 | Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Prod registry           |
 | AcrPush                                          | `id-wv-cd-prod`    | Prod registry           |
 | Contributor                                      | `id-wv-cd-prod`    | `rg-wandervibe-prod`    |
 
-Staging can push only to the staging registry. Prod can read and import that registry, and can push and import on the prod registry. Neither identity has a role assignment on the other environment's resource group.
+Staging can push only to the staging registry. Prod can pull from the staging registry and cannot push to it or import into it. Prod can push and import on the prod registry. Neither identity has a role assignment on the other environment's resource group.
+
+AcrPull (`7f951dda-4ed3-4680-a7ca-43fe172d538d`) allows only `Microsoft.ContainerRegistry/registries/pull/read`. Container Registry Data Importer and Data Reader (`577a9874-89fd-4f24-9dbd-b5034d0ad23a`) also allows `Microsoft.ContainerRegistry/registries/importImage/action` on the registry it is assigned to, so assigning it on staging would let the prod identity import images into staging. The registries are Basic. Repository ABAC roles such as Container Registry Repository Reader require Premium, so AcrPull is the read-only role on the source. `az acr import` with `--registry` set to the staging registry resource id and `--source` set to `repository:tag` calls `importImage` on the prod registry, where the importer role is assigned, and pulls the source with the caller's token. AcrPull authorizes that pull. The importer role is not assigned on the staging registry.
 
 Contributor is the deployment role until [#29](https://github.com/marcgs/WanderVibe/issues/29). On the resource group it can do more than deploy the container:
 
@@ -75,7 +77,7 @@ Contributor is accepted here because this is a personal project and the narrower
 - `Microsoft.ContainerRegistry/registries/read`
 - `Microsoft.App/locations/*/read` if a live run is denied while polling Container Apps status
 
-That list is also in [the review comment](https://github.com/marcgs/WanderVibe/pull/28#issuecomment-6490957748). The registry data roles stay outside it: AcrPush for the registry the identity pushes to, and Container Registry Data Importer and Data Reader for import and read. While Contributor is assigned on the resource group that contains the registry, AcrPush on that registry is redundant in non-ABAC mode, because Contributor already includes registry push and pull. The assignment stays so the push right is still explicit when #29 removes Contributor.
+That list is also in [the review comment](https://github.com/marcgs/WanderVibe/pull/28#issuecomment-6490957748). The registry data roles stay outside it. AcrPush is the push role on the registry that identity pushes to. Container Registry Data Importer and Data Reader is the import role, and only on the prod registry. AcrPull is the prod identity's role on the staging registry. While Contributor is assigned on the resource group that contains a registry, AcrPush and the importer role on that same registry are redundant in non-ABAC mode, because Contributor already includes registry push, pull, and import. Those assignments stay so the registry rights are still explicit when #29 removes Contributor. AcrPull on the staging registry is not redundant: the prod identity has no Contributor assignment there.
 
 Neither CD identity has Key Vault Secrets User, Key Vault Secrets Officer, Key Vault Administrator, Owner, or User Access Administrator. A break-glass read or write outside Bicep is a role assignment on Marc's user, removed when the task is done. [docs/infra.md](../infra.md) already says a standing Secrets Officer assignment can read the database password.
 

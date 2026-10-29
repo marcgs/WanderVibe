@@ -144,7 +144,7 @@ az role assignment create \
 az role assignment create \
   --assignee-object-id "$prod_principal" \
   --assignee-principal-type ServicePrincipal \
-  --role "Container Registry Data Importer and Data Reader" \
+  --role AcrPull \
   --scope "$staging_acr_id"
 az role assignment create \
   --assignee-object-id "$prod_principal" \
@@ -173,12 +173,14 @@ Every role assignment:
 | Key Vault Secrets User                           | `id-wv-prod`       | Prod Key Vault          | `infra/main.bicep`                                                     |
 | AcrPush                                          | `id-wv-cd-staging` | Staging registry        | This step                                                              |
 | Contributor                                      | `id-wv-cd-staging` | `rg-wandervibe-staging` | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
-| Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Staging registry        | This step                                                              |
+| AcrPull                                          | `id-wv-cd-prod`    | Staging registry        | This step                                                              |
 | Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
 | AcrPush                                          | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
 | Contributor                                      | `id-wv-cd-prod`    | `rg-wandervibe-prod`    | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
 
-`id-wv-cd-staging` can push to the staging registry and cannot push to the prod registry. `id-wv-cd-prod` can read and import from the staging registry, and can push and import on the prod registry. It cannot push to the staging registry.
+`id-wv-cd-staging` can push to the staging registry and cannot push to the prod registry. `id-wv-cd-prod` can pull from the staging registry. It cannot push to that registry and it cannot import into it. It can push and import on the prod registry.
+
+The staging registry is Basic, so repository ABAC roles such as Container Registry Repository Reader do not apply. AcrPull is the read-only role. Its only action is `Microsoft.ContainerRegistry/registries/pull/read`. Container Registry Data Importer and Data Reader includes `Microsoft.ContainerRegistry/registries/importImage/action` on the registry where it is assigned, which would let this identity import images into staging. That role stays on the prod registry only. `az acr import --name <prod registry> --registry <staging registry resource id> --source <repository>:<tag>` runs the import on the prod registry and pulls the source with the caller's token. AcrPull on the source authorizes that pull. Do not assign the importer role to `id-wv-cd-prod` on the staging registry.
 
 The app identity roles already exist from the bootstrap. The migration job uses that identity, so it can pull the migrate image and read `database-url`. Neither CD identity receives a Key Vault data-plane role.
 

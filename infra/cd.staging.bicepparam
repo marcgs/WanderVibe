@@ -11,5 +11,7 @@ var allowedIpRangesFromEnv = readEnvironmentVariable('WANDER_ALLOWED_IP_RANGES',
 param allowedIpRanges = empty(allowedIpRangesFromEnv)
   ? []
   : filter(map(split(allowedIpRangesFromEnv, ','), range => trim(range)), range => !empty(range))
-// Stay closed until story #15. Do not set this to false before then.
+// Stay closed until sign-in is configured and you open ingress on purpose.
+// GitHub deploys read this file, so a one-off false value is overwritten.
+// See docs/deploy.md.
 param restrictPublicAccess = true

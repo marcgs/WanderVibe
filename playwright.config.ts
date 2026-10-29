@@ -15,6 +15,14 @@ export default defineConfig({
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: {
+      ...process.env,
+      AUTH_SECRET:
+        process.env.AUTH_SECRET ??
+        "local-test-only-auth-secret-not-used-in-azure",
+      AUTH_TRUST_HOST: "true",
+      AUTH_TEST_LOGIN: "true",
+    },
   },
   projects: [
     {

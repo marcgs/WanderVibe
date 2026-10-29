@@ -56,7 +56,7 @@ param allowedIpRanges string[] = []
 @maxValue(32)
 param minAllowedPrefixLength int = 16
 
-@description('When true, ingress allows only allowedIpRanges. Stays true until story #15. Set false only after sign-in is enforced on every page except the sign-in page and /api/health.')
+@description('When true, ingress allows only allowedIpRanges. Stays true in the parameter files. Set false only after sign-in is configured. See docs/deploy.md.')
 param restrictPublicAccess bool = true
 
 var acceptedImageTag = requireImageTag(containerImageTag, deployContainerApp)
@@ -166,8 +166,21 @@ module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
   }
 }
 
+module appEnv 'modules/app-env.bicep' = {
+  name: 'app-env'
+  params: {
+    keyVaultUri: keyVault.outputs.uri
+    databaseUrlSecretName: names.outputs.databaseUrlSecretName
+    applicationInsightsSecretName: names.outputs.applicationInsightsSecretName
+  }
+}
+
 module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
   name: 'container-app'
+  dependsOn: [
+    databaseUrlSecret
+    applicationInsightsSecret
+  ]
   params: {
     name: names.outputs.containerAppName
     location: location
@@ -178,26 +191,8 @@ module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
     containerImage: '${registry.outputs.loginServer}/${containerImageName}:${acceptedImageTag}'
     minReplicas: minReplicas
     maxReplicas: maxReplicas
-    keyVaultSecrets: [
-      {
-        name: names.outputs.databaseUrlSecretName
-        keyVaultUrl: databaseUrlSecret.outputs.versionlessUrl
-      }
-      {
-        name: names.outputs.applicationInsightsSecretName
-        keyVaultUrl: applicationInsightsSecret.outputs.versionlessUrl
-      }
-    ]
-    secretEnvironmentVariables: [
-      {
-        name: 'DATABASE_URL'
-        secretRef: names.outputs.databaseUrlSecretName
-      }
-      {
-        name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-        secretRef: names.outputs.applicationInsightsSecretName
-      }
-    ]
+    keyVaultSecrets: appEnv.outputs.keyVaultSecrets
+    secretEnvironmentVariables: appEnv.outputs.secretEnvironmentVariables
     allowedIpRanges: allowedIpRanges
     minAllowedPrefixLength: minAllowedPrefixLength
     restrictPublicAccess: restrictPublicAccess

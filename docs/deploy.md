@@ -267,9 +267,113 @@ The address lookup runs only when the deployment output `publicAccessRestricted`
 
 The deploy jobs use concurrency groups `deploy-staging` and `deploy-prod` with `cancel-in-progress: false`. A prod approval does not hold the staging group.
 
-When story #15 sets `restrictPublicAccess` to false, the output is false, and the workflow does not add a runner rule. Adding one would allow only the runner and lock everyone else out.
+When a deployment sets `restrictPublicAccess` to false, the output is false, and the workflow does not add a runner rule. Adding one would allow only the runner and lock everyone else out. The parameter files still set the flag to true, so GitHub deploys keep adding and removing the runner rule. `/api/health` and `/api/ready` answer without a session, which is what this smoke test calls. The sign-in setup below does not change that step.
 
 On the first real staging deploy, also run the live checks in [docs/infra.md](infra.md): `az deployment group what-if` shows `ipSecurityRestrictions` on the Container App, a request from outside the allowlist gets 403, and a request from an allowlisted address gets 200 for `/api/health` and `/api/ready`. Those calls need the subscription. CI does not run them.
+
+## Sign-in
+
+Auth.js signs a traveler in with Microsoft Entra ID or Google and stores the session in Postgres. The decisions are in [ADR-0004](adr/ADR-0004-authentication.md). The Container App reads every provider value from Key Vault. The repository and the GitHub Actions variables do not hold them. There are no new repository secrets.
+
+Create the secrets before the first deploy of this revision. A Container App revision that references a missing secret fails. The app identity already has Key Vault Secrets User on the vault, from `infra/main.bicep`. You do not grant that role again. Do not grant it to either CD identity.
+
+### Environment variables
+
+| Variable                         | Local                      | Azure                                                    |
+| -------------------------------- | -------------------------- | -------------------------------------------------------- |
+| `DATABASE_URL`                   | `.env`                     | Key Vault `database-url`, already created by Bicep       |
+| `AUTH_SECRET`                    | `.env`, a local value only | Key Vault `auth-secret`                                  |
+| `AUTH_TRUST_HOST`                | `true` in `.env`           | Set in the app (`trustHost: true`). No Key Vault secret. |
+| `AUTH_GOOGLE_ID`                 | `.env`, or empty           | Key Vault `auth-google-id`                               |
+| `AUTH_GOOGLE_SECRET`             | `.env`, or empty           | Key Vault `auth-google-secret`                           |
+| `AUTH_MICROSOFT_ENTRA_ID_ID`     | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-id`                   |
+| `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-secret`               |
+| `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-issuer`               |
+| `AUTH_TEST_LOGIN`                | Playwright sets `true`     | Do not set it. `NODE_ENV=production` ignores it anyway.  |
+
+Use a different `AUTH_SECRET` in the staging vault and the prod vault. The Google client and the Entra app can be the same registration for both environments when both redirect URIs are on that app. Generate the secret with `openssl rand -base64 32`. Do not commit the output.
+
+A running revision keeps the secret values it resolved when it started. After you change a secret, the next deploy starts a revision that reads the new version.
+
+### Redirect URIs
+
+Auth.js uses these callback paths. The host is the Container App hostname, from the deployment output `containerAppFqdn` or:
+
+```bash
+az containerapp show \
+  --name ca-wv-staging \
+  --resource-group rg-wandervibe-staging \
+  --query properties.configuration.ingress.fqdn \
+  --output tsv
+```
+
+Use `ca-wv-prod` and `rg-wandervibe-prod` for production. Register all three origins on each provider. The platform is **Web**.
+
+| Environment | Microsoft Entra ID                                            | Google                                            |
+| ----------- | ------------------------------------------------------------- | ------------------------------------------------- |
+| Local       | `http://localhost:3000/api/auth/callback/microsoft-entra-id`  | `http://localhost:3000/api/auth/callback/google`  |
+| Staging     | `https://<staging-fqdn>/api/auth/callback/microsoft-entra-id` | `https://<staging-fqdn>/api/auth/callback/google` |
+| Prod        | `https://<prod-fqdn>/api/auth/callback/microsoft-entra-id`    | `https://<prod-fqdn>/api/auth/callback/google`    |
+
+If the hostname does not exist yet, register localhost first, deploy the platform, then add the staging and prod URIs before you try to sign in there. A wrong redirect URI fails at the provider. It does not stop the container from starting.
+
+### Microsoft Entra ID
+
+In the Microsoft Entra admin center, create an app registration named WanderVibe.
+
+1. Choose who can sign in, and set the issuer to match.
+   - This directory only: `https://login.microsoftonline.com/<tenant-id>/v2.0`
+   - Work and school accounts plus personal Microsoft accounts: `https://login.microsoftonline.com/common/v2.0`
+   - Personal Microsoft accounts only: `https://login.microsoftonline.com/consumers/v2.0`
+2. Add a **Web** redirect URI for each row in the table above. Do not use a SPA or mobile platform. Auth.js is a confidential server client.
+3. Create a client secret and copy the **Value** once. That is `AUTH_MICROSOFT_ENTRA_ID_SECRET`. The secret expires. Write a new Key Vault version before it expires, then deploy so the revision picks it up.
+4. Copy the Application (client) ID. That is `AUTH_MICROSOFT_ENTRA_ID_ID`. The Directory (tenant) ID is the `<tenant-id>` in a single-tenant issuer.
+5. The provider asks for `openid`, `profile`, `email`, and `User.Read`. If the tenant requires admin consent, grant it for this app. Otherwise the sign-in stops on the consent screen.
+
+### Google
+
+In Google Cloud Console, configure the OAuth consent screen, then create an OAuth client ID.
+
+1. Application type: **Web application**.
+2. Authorized redirect URIs: the Google column above. Authorized JavaScript origins are not required for this server callback.
+3. If the consent screen is in testing, add the Google account you will sign in with as a test user.
+4. The client id is `AUTH_GOOGLE_ID`. The client secret is `AUTH_GOOGLE_SECRET`.
+
+### Write the Key Vault secrets
+
+Grant your user Key Vault Secrets Officer on the vault for this step, on your user, not on a CD identity. Remove the assignment when the secrets exist. A Privileged Identity Management eligible assignment is the same idea when the tenant has it. [docs/infra.md](infra.md) explains why that role can also read the database password.
+
+```bash
+vault="<keyVaultName>"
+az keyvault secret set --vault-name "$vault" --name auth-secret --value "$(openssl rand -base64 32)"
+az keyvault secret set --vault-name "$vault" --name auth-google-id --value "<google client id>"
+az keyvault secret set --vault-name "$vault" --name auth-google-secret --value "<google client secret>"
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --value "<application client id>"
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --value "<client secret value>"
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --value "https://login.microsoftonline.com/<tenant-id>/v2.0"
+```
+
+Repeat for the other environment's vault with a new `auth-secret`. The shell history will contain the values. Close that shell when you are done. Do not put the values in a parameter file, a GitHub variable, or a GitHub secret.
+
+Then deploy. From an address on the allowlist, open `https://<fqdn>/signin` and complete Microsoft or Google. An unsigned request to `/` redirects to `/signin`. An unsigned request to any other API returns 401. `https://<fqdn>/api/health` and `https://<fqdn>/api/ready` return 200 with no session.
+
+### Opening ingress
+
+Leave the parameter files at `restrictPublicAccess = true` until that sign-in works. `infra/tests/check-access-restrictions.sh` fails the build if a parameter file sets the flag to false.
+
+A one-off override opens the hostname only until the next GitHub deploy, which applies `infra/cd.staging.bicepparam` or `infra/cd.prod.bicepparam` and closes it again:
+
+```bash
+az deployment group create \
+  --name wandervibe-staging \
+  --resource-group rg-wandervibe-staging \
+  --template-file infra/cd.bicep \
+  --parameters infra/cd.staging.bicepparam \
+  --parameters containerImageTag="${sha}" \
+  --parameters restrictPublicAccess=false
+```
+
+To keep ingress open, set `restrictPublicAccess = false` in both the main and the cd parameter file for that environment, and change the check script in the same commit. The deploy output `publicAccessRestricted` becomes false. The workflow then skips `gh-run-<run id>`, which is required: adding an Allow rule on an open list would lock the app to the runner. The smoke test still expects 200 from `/api/health` and `/api/ready` with no session.
 
 ## Roll back
 

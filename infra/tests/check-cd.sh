@@ -597,4 +597,36 @@ if found != ["LegacyRegistryPermissions"]:
     raise SystemExit(f"registry roleAssignmentMode is {found!r}")
 PY
 
+python3 - <<'PY'
+from pathlib import Path
+
+required = [
+    "AUTH_SECRET",
+    "AUTH_GOOGLE_ID",
+    "AUTH_GOOGLE_SECRET",
+    "AUTH_MICROSOFT_ENTRA_ID_ID",
+    "AUTH_MICROSOFT_ENTRA_ID_SECRET",
+    "AUTH_MICROSOFT_ENTRA_ID_ISSUER",
+    "auth-secret",
+    "auth-google-id",
+    "auth-google-secret",
+    "auth-microsoft-entra-id-id",
+    "auth-microsoft-entra-id-secret",
+    "auth-microsoft-entra-id-issuer",
+]
+env = Path("infra/modules/app-env.bicep").read_text()
+main = Path("infra/main.bicep").read_text()
+cd = Path("infra/cd.bicep").read_text()
+for name in required:
+    if name not in env:
+        raise SystemExit(f"app-env.bicep is missing {name}")
+if "modules/app-env.bicep" not in main or "modules/app-env.bicep" not in cd:
+    raise SystemExit("main.bicep and cd.bicep must both reference app-env.bicep")
+for path in Path("infra").glob("*.bicepparam"):
+    text = path.read_text()
+    if "AUTH_SECRET" in text or "auth-secret" in text:
+        raise SystemExit(f"{path} must not contain an auth secret")
+print("Auth secret references stay in the template, not in parameter files.")
+PY
+
 echo "Continuous deployment checks passed."

@@ -1,6 +1,6 @@
 # Azure infrastructure
 
-WanderVibe's Azure resources are Bicep in [`infra/`](../infra). `infra/main.bicep` composes the modules in `infra/modules/`. Parameter files `infra/main.staging.bicepparam` and `infra/main.prod.bicepparam` target Switzerland North. Continuous deployment is [docs/deploy.md](deploy.md). The decisions are in [ADR-0002](adr/ADR-0002-azure-hosting.md) and [ADR-0003](adr/ADR-0003-continuous-deployment.md).
+WanderVibe's Azure resources are Bicep in [`infra/`](../infra). `infra/main.bicep` composes the modules in `infra/modules/`. Parameter files `infra/main.staging.bicepparam` and `infra/main.prod.bicepparam` target Switzerland North. Continuous deployment is [docs/deploy.md](deploy.md). The decisions are in [ADR-0002](adr/ADR-0002-azure-hosting.md), [ADR-0003](adr/ADR-0003-continuous-deployment.md), and [ADR-0004](adr/ADR-0004-authentication.md).
 
 There is no Azure subscription in CI. CI downloads Bicep CLI 0.48.1, checks its SHA-256, and runs `bicep build` and `bicep lint`. It does not create resources.
 
@@ -36,15 +36,15 @@ Key Vault authorization is Azure RBAC. The template does not set access policies
 
 ## Ingress allowlist
 
-Until story #15, the app has no sign-in. Staging and production both keep Container App ingress closed to the public. Both parameter files set `restrictPublicAccess` to `true`. `allowedIpRanges` is the list of IPv4 CIDRs that may call the app. It is empty unless a deploy-time value says otherwise. The parameter files contain no addresses.
+Sign-in is enforced in the app ([ADR-0004](adr/ADR-0004-authentication.md)). Staging and production still keep Container App ingress closed to the public. Both parameter files set `restrictPublicAccess` to `true`. `allowedIpRanges` is the list of IPv4 CIDRs that may call the app. It is empty unless a deploy-time value says otherwise. The parameter files contain no addresses.
 
 Container Apps allows every client when `ipSecurityRestrictions` is empty, and every rule in one list has to share a single action (`Allow` or `Deny`). While access is restricted, the template sends Allow rules only:
 
-| `restrictPublicAccess` | `allowedIpRanges` | Ingress rules                                                                             |
-| ---------------------- | ----------------- | ----------------------------------------------------------------------------------------- |
-| `true`                 | empty             | One Allow rule for `192.0.2.1/32`                                                         |
-| `true`                 | one or more CIDRs | One Allow rule per CIDR (`allow-0`, `allow-1`, …)                                         |
-| `false`                | ignored           | `[]`, which Azure treats as allow every client. Only after story #15, as described below. |
+| `restrictPublicAccess` | `allowedIpRanges` | Ingress rules                                                                                         |
+| ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `true`                 | empty             | One Allow rule for `192.0.2.1/32`                                                                     |
+| `true`                 | one or more CIDRs | One Allow rule per CIDR (`allow-0`, `allow-1`, …)                                                     |
+| `false`                | ignored           | `[]`, which Azure treats as allow every client. Only after sign-in is configured, as described below. |
 
 `192.0.2.1/32` is an RFC 5737 documentation address (TEST-NET-1). It is not a client. Every other IPv4 source misses the Allow rule. Container Apps answers HTTP 403 with the body `RBAC: access denied`. A request from an address on the list reaches the app, and `/api/health` returns 200.
 
@@ -77,7 +77,7 @@ az deployment group create \
 
 In GitHub Actions, put the `export` and `az deployment group create` in the same step. A later step does not see the export unless the workflow writes it to `GITHUB_ENV`.
 
-Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. That file also sets `restrictPublicAccess = true` and reads the same variable. Leave the flag true until story #15 is accepted. With an empty allowlist, production's hostname answers 403 to every real client, so the app is not on the public internet and trip data stored there is not reachable from it.
+Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. That file also sets `restrictPublicAccess = true` and reads the same variable. Leave the flag true until sign-in is configured and you open ingress on purpose. With an empty allowlist, the hostname answers 403 to every real client, so trip data is not reachable from the public internet.
 
 ### Verify 403 and 200
 
@@ -213,24 +213,15 @@ Alternative: run the smoke test on a self-hosted runner whose egress CIDR is alr
 
 The `actions` ranges published at `https://api.github.com/meta` are a poor fit. They change, the list is large, and any GitHub-hosted runner could call the app. Leave them out of the repository.
 
-### Opening ingress after story #15
+### Opening ingress after sign-in is configured
 
-Leave `restrictPublicAccess` true until story #15 is accepted. Before setting it to false, sign-in is enforced on every page except the sign-in page and `/api/health`. Unauthenticated page requests redirect to sign-in. Unauthenticated API requests return 401. `/api/health` stays anonymous so the platform probes keep working. Once that deploy reports `publicAccessRestricted` false, the story #14 smoke test skips the temporary runner rule, as described above.
+Sign-in is enforced before you set `restrictPublicAccess` to false. Unauthenticated page requests redirect to `/signin`. Unauthenticated API requests return 401. These paths stay anonymous, with no redirect and no 401: `/signin`, `/api/auth/*` (the provider callbacks), `/api/health`, and `/api/ready`. Health and ready stay anonymous so the platform probes and the deploy smoke test still get a response with no session. `/api/health` returns 200. `/api/ready` returns 200 when Postgres answers.
 
-This deploy sends an empty rule list, which allows every client:
+The parameter files keep `restrictPublicAccess = true`. A one-off `restrictPublicAccess=false` on `az deployment group create` opens the hostname until the next GitHub deploy. That deploy reads `infra/cd.staging.bicepparam` or `infra/cd.prod.bicepparam` and sets the flag back to true. To leave ingress open, change `restrictPublicAccess` to false in the main and cd parameter files for that environment, and update `infra/tests/check-access-restrictions.sh`, which rejects a parameter file that sets false. Do that only after you have signed in from an allowlisted address. [docs/deploy.md](deploy.md) has the provider setup and the order.
 
-```bash
-az deployment group create \
-  --name wandervibe-prod \
-  --resource-group rg-wandervibe-prod \
-  --parameters infra/main.prod.bicepparam \
-  --parameters restrictPublicAccess=false \
-  --parameters containerImageTag="${sha}"
-```
+Once a deploy reports `publicAccessRestricted` false, the smoke test skips the temporary runner rule, as described above. It still calls `/api/health` and `/api/ready` with no session and expects 200. The workflow does not add an Allow rule in that state. Adding one would allow only the runner and lock everyone else out.
 
-Repeat for staging with `rg-wandervibe-staging` and `infra/main.staging.bicepparam`. To widen access and still keep the public internet out, leave `restrictPublicAccess` true and pass a longer `allowedIpRanges` list.
-
-`/api/ready` is outside the #15 exceptions. After that story, a caller with no session receives 401 from `/api/ready`. The #14 smoke test expects 200 from that path with no session. Keep the allowlist for that check until the smoke test matches the auth rules, or until `/api/ready` is anonymous as well. Clearing `restrictPublicAccess` does not make an anonymous `/api/ready` return 200 once sign-in is enforced.
+To widen access and still keep the public internet out, leave `restrictPublicAccess` true and pass a longer `allowedIpRanges` list.
 
 ## Secrets
 
@@ -244,8 +235,16 @@ The template stores these Key Vault secrets and gives them to the Container App 
 | --------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
 | `database-url`                          | `DATABASE_URL`                          | Postgres connection string with `sslmode=verify-full`  |
 | `applicationinsights-connection-string` | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Workspace-based Application Insights connection string |
+| `auth-secret`                           | `AUTH_SECRET`                           | Auth.js session secret. Marc generates it.             |
+| `auth-google-id`                        | `AUTH_GOOGLE_ID`                        | Google OAuth client id                                 |
+| `auth-google-secret`                    | `AUTH_GOOGLE_SECRET`                    | Google OAuth client secret                             |
+| `auth-microsoft-entra-id-id`            | `AUTH_MICROSOFT_ENTRA_ID_ID`            | Entra application (client) id                          |
+| `auth-microsoft-entra-id-secret`        | `AUTH_MICROSOFT_ENTRA_ID_SECRET`        | Entra client secret value                              |
+| `auth-microsoft-entra-id-issuer`        | `AUTH_MICROSOFT_ENTRA_ID_ISSUER`        | Entra issuer URL                                       |
 
-The app reads `DATABASE_URL` today. It does not read the Application Insights variable until story #16. The reference is still created here so that value is never a plain environment variable or a file in git.
+The template writes `database-url` and `applicationinsights-connection-string`. It only references the six auth secrets. Marc creates those with `az keyvault secret set` before the revision that reads them. [docs/deploy.md](deploy.md) has the commands. The values are not parameters and they are not GitHub secrets.
+
+The app reads `DATABASE_URL` and the auth variables. It does not read the Application Insights variable until story #16. That reference is still created here so the connection string is never a plain environment variable or a file in git. The Container App identity already has Key Vault Secrets User, which is enough to read the auth secrets. Neither CD identity gets a Key Vault data-plane role.
 
 After a successful deployment the password lives in the `database-url` secret. You can drop the shell variable. If both are lost, reset the server password with `az postgres flexible-server update` and update the Key Vault secret. Do not commit either value.
 
@@ -256,7 +255,7 @@ After a successful deployment the password lives in the `database-url` secret. Y
 | `GET /api/health` | The process is up. It does not touch Postgres.             | `200` and `{ "status": "ok" }`                                             |
 | `GET /api/ready`  | The container completed `SELECT 1` against `DATABASE_URL`. | `200` and `{ "status": "ok" }`, or `503` and `{ "status": "unavailable" }` |
 
-Neither response includes host names, SQL, stack traces, or credentials. The route stops waiting after 2.5 seconds and returns the same 503. Startup and liveness probes call `/api/health` on port 3000. A liveness failure restarts the replica, so that probe does not touch Postgres. The readiness probe calls `/api/ready` with a 5 second timeout. A readiness failure only takes the replica out of traffic. Those probes run inside the Container Apps environment and are outside the [ingress allowlist](#ingress-allowlist). Story #14 can call `https://<container-app-fqdn>/api/ready` after deploy, once the runner address is on that list. `/api/health` stays the process check from story #1.
+Neither response includes host names, SQL, stack traces, or credentials. The route stops waiting after 2.5 seconds and returns the same 503. Startup and liveness probes call `/api/health` on port 3000. A liveness failure restarts the replica, so that probe does not touch Postgres. The readiness probe calls `/api/ready` with a 5 second timeout. A readiness failure only takes the replica out of traffic. Those probes run inside the Container Apps environment and are outside the [ingress allowlist](#ingress-allowlist). The deploy smoke test calls both URLs with no session. The auth proxy does not require a session for either path, and it does not look up a session before answering them. `/api/health` stays the process check from story #1.
 
 ## One-time setup
 
@@ -350,7 +349,7 @@ The platform deployment creates AcrPull and Key Vault Secrets User for the app i
 
 ## What this does not do
 
-- Sign-in (story #15). The allowlist is the control until that story is accepted.
+- Opening ingress. Sign-in is enforced in the app. The allowlist stays until you change `restrictPublicAccess`, as [Opening ingress after sign-in is configured](#opening-ingress-after-sign-in-is-configured) describes.
 - Custom domain and TLS certificates
 - Front Door, a WAF, VNet integration, and private ingress
 - Grant AcrPush or the other CD roles. That one-time setup is in [docs/deploy.md](deploy.md). The template still does not grant them.

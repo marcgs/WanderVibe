@@ -11,7 +11,7 @@ param minAllowedPrefixLength int = 16
 // every client. An empty allowlist still sends one Allow rule for 192.0.2.1/32
 // (RFC 5737 TEST-NET-1, not a client). Every other IPv4 source misses that rule
 // and receives HTTP 403. restrictPublicAccess false is the only way to send [],
-// which Azure treats as allow all, and only after story #15.
+// which Azure treats as allow all, and only after sign-in is configured.
 // Octets are decimal, 0-255, with no leading zeros. The prefix is /minAllowedPrefixLength through /32.
 func isOctet(o string) bool => length(o) >= 1 && length(o) <= 3 && empty(filter(range(0, length(o)), i => !contains('0123456789', substring(o, i, 1)))) && string(int(o)) == o && int(o) <= 255
 func isIpv4Cidr(r string, minPrefix int) bool => length(split(r, '/')) == 2 && length(split(split(r, '/')[0], '.')) == 4 && empty(filter(split(split(r, '/')[0], '.'), o => !isOctet(o))) && isOctet(split(r, '/')[1]) && int(split(r, '/')[1]) >= minPrefix && int(split(r, '/')[1]) <= 32

@@ -21,6 +21,12 @@ output postgresServerName string = 'psql-wv-${envShort}-${suffix}'
 output logAnalyticsName string = 'log-wv-${environmentName}'
 output applicationInsightsName string = 'appi-wv-${environmentName}'
 output identityName string = 'id-wv-${environmentName}'
-output containerAppsEnvironmentName string = 'cae-wv-${environmentName}'
-output containerAppName string = 'ca-wv-${environmentName}'
+@export()
+func environmentResourceName(environmentName string) string => 'cae-wv-${environmentName}'
+
+@export()
+func appResourceName(environmentName string) string => 'ca-wv-${environmentName}'
+
+output containerAppsEnvironmentName string = environmentResourceName(environmentName)
+output containerAppName string = appResourceName(environmentName)
 output migrationJobName string = 'job-wv-${environmentName}-migrate'

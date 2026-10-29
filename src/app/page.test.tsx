@@ -1,9 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
-import HomePage from "./page";
+import { HomeScreen } from "./home-screen";
 
 test("home page shows the WanderVibe placeholder", () => {
-  render(<HomePage />);
+  render(<HomeScreen />);
 
   expect(
     screen.getByRole("heading", { level: 1, name: "WanderVibe" }),

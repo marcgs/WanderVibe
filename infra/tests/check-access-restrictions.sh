@@ -36,7 +36,7 @@ if grep -nE '([0-9]{1,3}\.){3}[0-9]{1,3}' infra/*.bicepparam; then
   exit 1
 fi
 if grep -nE 'restrictPublicAccess[[:space:]]*=[[:space:]]*false' infra/*.bicepparam; then
-  echo "Parameter files must keep restrictPublicAccess true until story #15."
+  echo "Parameter files must keep restrictPublicAccess true. Opening ingress is a manual edit after sign-in is configured. See docs/deploy.md."
   exit 1
 fi
 for file in infra/main.staging.bicepparam infra/main.prod.bicepparam infra/cd.staging.bicepparam infra/cd.prod.bicepparam; do

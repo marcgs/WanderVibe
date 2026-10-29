@@ -1,5 +1,7 @@
 targetScope = 'resourceGroup'
 
+import { requireImageTag } from 'modules/image-tag.bicep'
+
 @description('Deployment environment. Staging and production use separate resource groups and parameter files.')
 @allowed([
   'staging'
@@ -38,10 +40,9 @@ param maxReplicas int
 @description('Repository name inside the container registry.')
 param containerImageName string = 'wandervibe'
 
-@description('Image tag in the container registry. Pass the tag published by az acr build. The default does not exist until an image is pushed.')
-@minLength(1)
+@description('Image tag in the container registry. Pass the tag published for this commit. There is no initial default. An empty tag or initial fails the deployment when deployContainerApp is true.')
 @maxLength(128)
-param containerImageTag string = 'initial'
+param containerImageTag string = ''
 
 @description('Create the Container App. Set false on the first deployment, before an image exists in the registry.')
 param deployContainerApp bool = true
@@ -58,30 +59,25 @@ param minAllowedPrefixLength int = 16
 @description('When true, ingress allows only allowedIpRanges. Stays true until story #15. Set false only after sign-in is enforced on every page except the sign-in page and /api/health.')
 param restrictPublicAccess bool = true
 
-var envShort = environmentName == 'prod' ? 'prd' : 'stg'
-var suffix = nameSuffix == '' ? take(uniqueString(resourceGroup().id), 8) : nameSuffix
-var databaseName = 'wandervibe'
-var databaseUrlSecretName = 'database-url'
-var applicationInsightsSecretName = 'applicationinsights-connection-string'
+var acceptedImageTag = requireImageTag(containerImageTag, deployContainerApp)
 
 var tags = {
   project: 'wandervibe'
   environment: environmentName
 }
 
-var containerRegistryName = 'acrwv${envShort}${suffix}'
-var keyVaultName = 'kvwv${envShort}${suffix}'
-var postgresServerName = 'psql-wv-${envShort}-${suffix}'
-var logAnalyticsName = 'log-wv-${environmentName}'
-var applicationInsightsName = 'appi-wv-${environmentName}'
-var identityName = 'id-wv-${environmentName}'
-var containerAppsEnvironmentName = 'cae-wv-${environmentName}'
-var containerAppName = 'ca-wv-${environmentName}'
+module names 'modules/names.bicep' = {
+  name: 'names'
+  params: {
+    environmentName: environmentName
+    nameSuffix: nameSuffix
+  }
+}
 
 module logAnalytics 'modules/log-analytics.bicep' = {
   name: 'log-analytics'
   params: {
-    name: logAnalyticsName
+    name: names.outputs.logAnalyticsName
     location: location
     tags: tags
   }
@@ -90,7 +86,7 @@ module logAnalytics 'modules/log-analytics.bicep' = {
 module applicationInsights 'modules/application-insights.bicep' = {
   name: 'application-insights'
   params: {
-    name: applicationInsightsName
+    name: names.outputs.applicationInsightsName
     location: location
     tags: tags
     workspaceId: logAnalytics.outputs.id
@@ -100,7 +96,7 @@ module applicationInsights 'modules/application-insights.bicep' = {
 module identity 'modules/managed-identity.bicep' = {
   name: 'managed-identity'
   params: {
-    name: identityName
+    name: names.outputs.identityName
     location: location
     tags: tags
   }
@@ -109,7 +105,7 @@ module identity 'modules/managed-identity.bicep' = {
 module registry 'modules/container-registry.bicep' = {
   name: 'container-registry'
   params: {
-    name: containerRegistryName
+    name: names.outputs.containerRegistryName
     location: location
     tags: tags
     acrPullPrincipalId: identity.outputs.principalId
@@ -119,7 +115,7 @@ module registry 'modules/container-registry.bicep' = {
 module keyVault 'modules/key-vault.bicep' = {
   name: 'key-vault'
   params: {
-    name: keyVaultName
+    name: names.outputs.keyVaultName
     location: location
     tags: tags
     appIdentityPrincipalId: identity.outputs.principalId
@@ -129,12 +125,12 @@ module keyVault 'modules/key-vault.bicep' = {
 module postgres 'modules/postgres.bicep' = {
   name: 'postgres'
   params: {
-    name: postgresServerName
+    name: names.outputs.postgresServerName
     location: location
     tags: tags
     administratorLogin: postgresAdminLogin
     administratorLoginPassword: postgresAdminPassword
-    databaseName: databaseName
+    databaseName: names.outputs.databaseName
   }
 }
 
@@ -142,12 +138,12 @@ module databaseUrlSecret 'modules/key-vault-secret.bicep' = {
   name: 'secret-database-url'
   params: {
     vaultName: keyVault.outputs.name
-    secretName: databaseUrlSecretName
+    secretName: names.outputs.databaseUrlSecretName
     // The password is a secure parameter, so this string stays secure.
     // uriComponent encodes it. sslmode=verify-full matches what node-pg 8 already
     // does for "require", without the warning. Node's CA store includes
     // DigiCert Global Root G2, which signs Azure Flexible Server certificates.
-    secretValue: 'postgresql://${postgresAdminLogin}:${uriComponent(postgresAdminPassword)}@${postgres.outputs.fqdn}:5432/${databaseName}?sslmode=verify-full'
+    secretValue: 'postgresql://${postgresAdminLogin}:${uriComponent(postgresAdminPassword)}@${postgres.outputs.fqdn}:5432/${names.outputs.databaseName}?sslmode=verify-full'
   }
 }
 
@@ -156,14 +152,14 @@ module applicationInsightsSecret 'modules/application-insights-secret.bicep' = {
   params: {
     appInsightsName: applicationInsights.outputs.name
     vaultName: keyVault.outputs.name
-    secretName: applicationInsightsSecretName
+    secretName: names.outputs.applicationInsightsSecretName
   }
 }
 
 module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
   name: 'container-apps-environment'
   params: {
-    name: containerAppsEnvironmentName
+    name: names.outputs.containerAppsEnvironmentName
     location: location
     tags: tags
     logAnalyticsWorkspaceName: logAnalytics.outputs.name
@@ -173,33 +169,33 @@ module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
 module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
   name: 'container-app'
   params: {
-    name: containerAppName
+    name: names.outputs.containerAppName
     location: location
     tags: tags
     environmentId: containerAppsEnvironment.outputs.id
     identityResourceId: identity.outputs.id
     registryServer: registry.outputs.loginServer
-    containerImage: '${registry.outputs.loginServer}/${containerImageName}:${containerImageTag}'
+    containerImage: '${registry.outputs.loginServer}/${containerImageName}:${acceptedImageTag}'
     minReplicas: minReplicas
     maxReplicas: maxReplicas
     keyVaultSecrets: [
       {
-        name: databaseUrlSecretName
+        name: names.outputs.databaseUrlSecretName
         keyVaultUrl: databaseUrlSecret.outputs.versionlessUrl
       }
       {
-        name: applicationInsightsSecretName
+        name: names.outputs.applicationInsightsSecretName
         keyVaultUrl: applicationInsightsSecret.outputs.versionlessUrl
       }
     ]
     secretEnvironmentVariables: [
       {
         name: 'DATABASE_URL'
-        secretRef: databaseUrlSecretName
+        secretRef: names.outputs.databaseUrlSecretName
       }
       {
         name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-        secretRef: applicationInsightsSecretName
+        secretRef: names.outputs.applicationInsightsSecretName
       }
     ]
     allowedIpRanges: allowedIpRanges
@@ -233,10 +229,10 @@ output keyVaultName string = keyVault.outputs.name
 output keyVaultUri string = keyVault.outputs.uri
 
 @description('Key Vault secret that holds the Postgres connection string.')
-output databaseUrlSecretName string = databaseUrlSecretName
+output databaseUrlSecretName string = names.outputs.databaseUrlSecretName
 
 @description('Key Vault secret that holds the Application Insights connection string.')
-output applicationInsightsSecretName string = applicationInsightsSecretName
+output applicationInsightsSecretName string = names.outputs.applicationInsightsSecretName
 
 @description('PostgreSQL Flexible Server name.')
 output postgresServerName string = postgres.outputs.name

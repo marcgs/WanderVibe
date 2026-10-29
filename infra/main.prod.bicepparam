@@ -8,7 +8,8 @@ param postgresAdminPassword = readEnvironmentVariable('POSTGRES_ADMIN_PASSWORD')
 // One replica so production does not cold-start. Set this to 0 to scale prod to zero.
 param minReplicas = 1
 param maxReplicas = 2
-param containerImageTag = 'initial'
+// Do not set containerImageTag here. Pass the commit SHA at deploy time.
+// An empty tag or initial is refused when deployContainerApp is true.
 // Comma-separated IPv4 CIDRs, supplied at deploy time. Unset or empty closes ingress.
 // Do not commit addresses. Production uses the same closure as staging until story #15.
 var allowedIpRangesFromEnv = readEnvironmentVariable('WANDER_ALLOWED_IP_RANGES', '')

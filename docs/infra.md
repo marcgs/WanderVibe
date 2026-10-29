@@ -1,6 +1,6 @@
 # Azure infrastructure
 
-WanderVibe's Azure resources are Bicep in [`infra/`](../infra). `infra/main.bicep` composes the modules in `infra/modules/`. Parameter files `infra/main.staging.bicepparam` and `infra/main.prod.bicepparam` target Switzerland North. This repository does not deploy from CI. Story #14 adds that pipeline. The decisions are in [ADR-0002](adr/ADR-0002-azure-hosting.md).
+WanderVibe's Azure resources are Bicep in [`infra/`](../infra). `infra/main.bicep` composes the modules in `infra/modules/`. Parameter files `infra/main.staging.bicepparam` and `infra/main.prod.bicepparam` target Switzerland North. Continuous deployment is [docs/deploy.md](deploy.md). The decisions are in [ADR-0002](adr/ADR-0002-azure-hosting.md) and [ADR-0003](adr/ADR-0003-continuous-deployment.md).
 
 There is no Azure subscription in CI. CI downloads Bicep CLI 0.48.1, checks its SHA-256, and runs `bicep build` and `bicep lint`. It does not create resources.
 
@@ -132,13 +132,13 @@ There is no Azure subscription in CI, so CI checks the compiled template and the
 
 Story #14, after each staging deploy and each production deploy, calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`. The job fails unless both return 200. A GitHub-hosted runner gets 403 until that job's egress address is allowed. Ingress answers 403 before the container starts, so a retry does not turn a 403 into a 200. Retry only after the runner rule exists, for the scale-to-zero cold start on staging (`minReplicas` is 0).
 
-The Bicep deployment uses operator ranges only. It does not include the runner address. Put those ranges in the GitHub Actions variable `WANDER_ALLOWED_IP_RANGES` on the `staging` and `production` environments. It is not a secret, and it stays out of git. The same 32-entry repository cap and the `/16`–`/32` prefix check apply when that deployment runs.
+The Bicep deployment uses operator ranges only. It does not include the runner address. Put those ranges in the repository variables `STAGING_WANDER_ALLOWED_IP_RANGES` and `PROD_WANDER_ALLOWED_IP_RANGES`. [docs/deploy.md](deploy.md) lists them. They are not secrets, and they stay out of git. The same 32-entry repository cap and the `/16`–`/32` prefix check apply when that deployment runs.
 
 The deploy job needs only `id-token: write` and `contents: read`. One deploy per environment runs at a time. A new run waits. It does not cancel the run that still has to remove its runner rule:
 
 ```yaml
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: deploy-${{ inputs.environment_name }}
   cancel-in-progress: false
 
 permissions:
@@ -146,18 +146,11 @@ permissions:
   contents: read
 ```
 
-`inputs.environment` is `staging` or `prod`, so the groups are `deploy-staging` and `deploy-prod`.
+`inputs.environment_name` is `staging` or `prod`, so the groups are `deploy-staging` and `deploy-prod`.
 
-Resolve the address in its own step, in the same job that calls the app. A shell variable does not survive into the next step, so write `RUNNER_CIDR` to `$GITHUB_ENV`. Reject a response that is not an IPv4 literal before that. The second lookup is optional; use it when both services answer:
+Resolve the address after Deploy, in the same job, and only when `publicAccessRestricted` is true. Give that step the same `if` as the add step. After story #15, when the output is false, an ipify or checkip outage does not fail the deploy. A shell variable does not survive into the next step, so write `RUNNER_CIDR` to `$GITHUB_ENV`. Reject a response that is not an IPv4 literal. Cross-check it with the second service. The two addresses must match. `az ... --output tsv` prints a JSON boolean as `True`. Read the output with `to_string` so the value is the lowercase string `true`:
 
 ```yaml
-- name: Resolve runner address
-  run: |
-    ip="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)"
-    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "unexpected egress IP: $ip" >&2; exit 1; }
-    cross="$(curl --fail --silent --show-error --ipv4 --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
-    [ "$ip" = "$cross" ] || { echo "egress IP mismatch: $ip vs $cross" >&2; exit 1; }
-    echo "RUNNER_CIDR=${ip}/32" >> "$GITHUB_ENV"
 - name: Deploy
   id: deploy
   run: |
@@ -165,9 +158,17 @@ Resolve the address in its own step, in the same job that calls the app. A shell
     restricted="$(az deployment group show \
       --name "$DEPLOYMENT" \
       --resource-group "$RG" \
-      --query properties.outputs.publicAccessRestricted.value \
+      --query "to_string(properties.outputs.publicAccessRestricted.value)" \
       --output tsv)"
     echo "restricted=${restricted}" >> "$GITHUB_OUTPUT"
+- name: Resolve runner address
+  if: steps.deploy.outputs.restricted == 'true'
+  run: |
+    ip="$(curl --fail --silent --show-error --ipv4 --max-time 10 --retry 3 https://api.ipify.org)"
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "unexpected egress IP: $ip" >&2; exit 1; }
+    cross="$(curl --fail --silent --show-error --ipv4 --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
+    [ "$ip" = "$cross" ] || { echo "egress IP mismatch: $ip vs $cross" >&2; exit 1; }
+    echo "RUNNER_CIDR=${ip}/32" >> "$GITHUB_ENV"
 - name: Allow this runner
   if: steps.deploy.outputs.restricted == 'true'
   run: |
@@ -178,17 +179,9 @@ Resolve the address in its own step, in the same job that calls the app. A shell
       --action Allow \
       --ip-address "${RUNNER_CIDR}"
 - name: Smoke test
-  run: |
-    code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 \
-      --output /tmp/wandervibe-health.txt --write-out '%{http_code}' \
-      "https://${FQDN}/api/health")"
-    test "$code" = 200
-    code="$(curl --silent --show-error --retry 2 --retry-delay 5 --max-time 10 \
-      --output /tmp/wandervibe-ready.txt --write-out '%{http_code}' \
-      "https://${FQDN}/api/ready")"
-    test "$code" = 200
+  run: bash scripts/smoke-test.sh "https://${FQDN}"
 - name: Remove runner rule
-  if: always()
+  if: always() && steps.login.outcome == 'success'
   run: |
     rule="gh-run-${GITHUB_RUN_ID}"
     present="$(az containerapp ingress access-restriction list \
@@ -206,9 +199,11 @@ Resolve the address in its own step, in the same job that calls the app. A shell
     fi
 ```
 
+`scripts/smoke-test.sh` requests `/api/health` and `/api/ready` up to 30 times, 10 seconds apart. Both must return 200 and `{ "status": "ok" }`. [`.github/workflows/deploy-environment.yml`](../.github/workflows/deploy-environment.yml) is the job that runs these steps.
+
 Skip the temporary rule when the deployment output `publicAccessRestricted` is false. That is the state after story #15, once `restrictPublicAccess` is false and ingress is already open. Adding an Allow rule then would allow only this runner for the smoke test and lock everyone else out. Removing it would open ingress again. The `if` on the add step skips that. The remove step still runs. The rule is absent, the count is 0, and it prints that there is nothing to remove.
 
-`if: always()` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled. `az containerapp ingress access-restriction remove` raises `ValidationError` when that name is absent, which is what happens when Deploy, the lookup, or the add step fails first. Count the rule with `access-restriction list` and remove it only when the count is not 0. A real remove failure still fails the job. A missing rule does not. Counting the live list also covers an add that succeeded on the server and then errored in the client.
+`if: always() && steps.login.outcome == 'success'` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled, and only after Azure login succeeded. A failed login does not try to remove a rule that was never added. `az containerapp ingress access-restriction remove` raises `ValidationError` when that name is absent, which is what happens when Deploy, the lookup, or the add step fails first. Count the rule with `access-restriction list` and remove it only when the count is not 0. A real remove failure still fails the job. A missing rule does not. Counting the live list also covers an add that succeeded on the server and then errored in the client.
 
 That removal must not leave the rule list empty. An empty `ipSecurityRestrictions` list allows every client. The Bicep deploy has already installed the sentinel rule `closed-until-allowlist`, or the operator Allow rules, before the runner rule is added. Cleanup removes only `gh-run-${GITHUB_RUN_ID}`. It leaves the sentinel and the operator rules in place. `az containerapp ingress access-restriction set` reads the current rules, adds this one, and writes the whole `ipSecurityRestrictions` array back. Two overlapping runs can clobber that array. The `deploy-<env>` concurrency group, with `cancel-in-progress: false`, is what prevents that. It also keeps the running job alive long enough to reach the remove step. If the runner dies before that step, the next IaC deploy rewrites the list from the operator ranges, or from the sentinel when those ranges are empty, and the leftover runner rule is gone.
 
@@ -279,10 +274,10 @@ az group create --name rg-wandervibe-staging --location switzerlandnorth
 az group create --name rg-wandervibe-prod --location switzerlandnorth
 ```
 
-Export the database password in the shell you will use for `what-if` and `create`:
+Export the database password in the shell you will use for `what-if` and `create`. The `Aa1!` suffix keeps a character from each class Azure requires:
 
 ```bash
-export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)Aa1!"
 ```
 
 Use a different password for production than for staging. Keep the value until that environment's deployment has written Key Vault.
@@ -294,14 +289,16 @@ From the repository root:
 ```bash
 az deployment group what-if \
   --resource-group rg-wandervibe-staging \
-  --parameters infra/main.staging.bicepparam
+  --parameters infra/main.staging.bicepparam \
+  --parameters deployContainerApp=false
 
 az deployment group what-if \
   --resource-group rg-wandervibe-prod \
-  --parameters infra/main.prod.bicepparam
+  --parameters infra/main.prod.bicepparam \
+  --parameters deployContainerApp=false
 ```
 
-`what-if` prints the resource changes. Secure parameters are redacted. Nothing is created. On an environment that already has this template, also pass the current `containerImageTag`. The ingress change is `ipSecurityRestrictions` on the Container App, described under [Ingress allowlist](#ingress-allowlist).
+`what-if` prints the resource changes. Secure parameters are redacted. Nothing is created. `deployContainerApp=false` previews the platform without an image tag. Previewing the Container App requires `containerImageTag`. An empty tag or `initial` fails that deployment and does not roll out a revision. On an environment that already has this template, pass the current tag. The ingress change is `ipSecurityRestrictions` on the Container App, described under [Ingress allowlist](#ingress-allowlist).
 
 ## First deployment
 
@@ -335,7 +332,7 @@ docker build --tag "<containerRegistryLoginServer>/wandervibe:${sha}" .
 docker push "<containerRegistryLoginServer>/wandervibe:${sha}"
 ```
 
-Create the Container App against that tag. The default of `deployContainerApp` is true, so this run creates the app. Ingress is closed unless `WANDER_ALLOWED_IP_RANGES` lists this machine. The [Ingress allowlist](#ingress-allowlist) section covers that variable, the 403 check, and the story #14 smoke test.
+Create the Container App against that tag. The default of `deployContainerApp` is true, so this run creates the app. Pass `containerImageTag`. An empty tag or `initial` fails the deployment before the app is updated. A short SHA is fine for this manual command. Continuous deployment uses the full 40-character SHA. After that workflow owns the running image, a later `infra/main.bicep` deployment that includes the Container App must pass the tag already deployed, or set `deployContainerApp=false`. Otherwise the manual deployment and the workflow overwrite each other's image. Ingress is closed unless `WANDER_ALLOWED_IP_RANGES` lists this machine. The [Ingress allowlist](#ingress-allowlist) section covers that variable, the 403 check, and the story #14 smoke test.
 
 ```bash
 az deployment group create \
@@ -353,8 +350,7 @@ The platform deployment creates AcrPull and Key Vault Secrets User for the app i
 
 ## What this does not do
 
-- Deploy or migrate from GitHub Actions (story #14)
 - Sign-in (story #15). The allowlist is the control until that story is accepted.
 - Custom domain and TLS certificates
 - Front Door, a WAF, VNet integration, and private ingress
-- Grant AcrPush to the future GitHub OIDC identity (story #14's one-time setup)
+- Grant AcrPush or the other CD roles. That one-time setup is in [docs/deploy.md](deploy.md). The template still does not grant them.

@@ -2,8 +2,9 @@
 # Startup and liveness: GET /api/health on port 3000.
 # Readiness: GET /api/ready. The route returns within 2.5s.
 # The body is only ok or unavailable.
-# The runtime image has no Prisma CLI. Apply migrations with
-# `prisma migrate deploy` in the deploy workflow (story #14).
+# The runtime image has no Prisma CLI. The migrate stage does.
+# Continuous deployment runs that stage inside Azure, because Postgres
+# accepts connections from Azure services only.
 #
 #   docker build -t wandervibe .
 #   docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://... wandervibe
@@ -26,6 +27,20 @@ COPY prisma.config.ts ./
 # Generate does not connect. The URL stays in this build stage.
 RUN DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
   npm ci --no-audit --no-fund
+
+# prisma migrate deploy. The Container Apps job runs this as the app identity,
+# which reads DATABASE_URL from Key Vault. npx uses the local Prisma CLI.
+FROM deps AS migrate
+
+ENV HOME=/tmp
+ENV NPM_CONFIG_CACHE=/tmp/npm-cache
+ENV PRISMA_HIDE_UPDATE_MESSAGE=1
+
+# prisma migrate deploy only reads the schema and migrations. node_modules stays
+# owned by root and world-readable, so this stage does not copy it with chown.
+USER node
+
+CMD ["npx", "--no-install", "prisma", "migrate", "deploy"]
 
 FROM base AS builder
 

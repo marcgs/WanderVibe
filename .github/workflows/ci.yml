@@ -174,3 +174,6 @@ jobs:
           bicep build-params infra/main.staging.bicepparam --outfile "${RUNNER_TEMP}/staging.parameters.json"
           bicep build-params infra/main.prod.bicepparam --outfile "${RUNNER_TEMP}/prod.parameters.json"
           rm -f "${RUNNER_TEMP}/staging.parameters.json" "${RUNNER_TEMP}/prod.parameters.json"
+
+      - name: Check ingress allowlist
+        run: bash infra/tests/check-access-restrictions.sh

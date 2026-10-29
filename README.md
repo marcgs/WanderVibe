@@ -106,7 +106,7 @@ npx prisma migrate dev
 
 - The `verify` job starts Postgres 17.11, applies migrations, then runs lint, Prettier, typecheck, unit tests, the production build, and Playwright.
 - The `image` job builds the Docker image, checks that `/api/health` returns 200, and checks that `/api/ready` returns 503 without a database. It does not push the image.
-- The `bicep` job downloads Bicep CLI 0.48.1, checks its SHA-256, then runs `bicep build` and `bicep lint` on `infra/`. It does not deploy.
+- The `bicep` job downloads Bicep CLI 0.48.1, checks its SHA-256, then runs `bicep build` and `bicep lint` on `infra/`. It also checks the ingress allowlist. It does not deploy.
 
 ## Infrastructure
 
@@ -126,6 +126,8 @@ az deployment group create \
 ```
 
 Then `az acr build` (or `az acr login` and `docker push`) and deploy again with `containerImageTag` set to that tag. Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. Do not commit the database password. `az acr login` uses an Entra token. It works with the registry admin user disabled.
+
+Until sign-in (story #15), staging and production ingress allow only IPv4 CIDRs supplied at deploy time. The parameter files commit no addresses. An empty list answers 403 to every real client. [docs/infra.md](docs/infra.md) has the commands, including how the story #14 smoke test adds the runner address for `/api/health` and `/api/ready`.
 
 ## Stack
 

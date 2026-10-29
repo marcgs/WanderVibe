@@ -50,3 +50,4 @@ next-env.d.ts
 # ARM JSON emitted by `bicep build` / `bicep build-params`
 infra/**/*.json
 !infra/bicepconfig.json
+!infra/tests/bicepconfig.json

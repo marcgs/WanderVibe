@@ -46,6 +46,18 @@ param containerImageTag string = 'initial'
 @description('Create the Container App. Set false on the first deployment, before an image exists in the registry.')
 param deployContainerApp bool = true
 
+@description('IPv4 CIDRs allowed through Container App ingress while restrictPublicAccess is true. Empty closes ingress to every real client. Parameter files read WANDER_ALLOWED_IP_RANGES. Do not commit addresses. At most 32 entries. That cap belongs to this repository, not to Container Apps.')
+@maxLength(32)
+param allowedIpRanges string[] = []
+
+@description('Smallest prefix length accepted in allowedIpRanges. Defaults to 16. Cannot be set below 8. 32 is the longest prefix.')
+@minValue(8)
+@maxValue(32)
+param minAllowedPrefixLength int = 16
+
+@description('When true, ingress allows only allowedIpRanges. Stays true until story #15. Set false only after sign-in is enforced on every page except the sign-in page and /api/health.')
+param restrictPublicAccess bool = true
+
 var envShort = environmentName == 'prod' ? 'prd' : 'stg'
 var suffix = nameSuffix == '' ? take(uniqueString(resourceGroup().id), 8) : nameSuffix
 var databaseName = 'wandervibe'
@@ -190,6 +202,9 @@ module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
         secretRef: applicationInsightsSecretName
       }
     ]
+    allowedIpRanges: allowedIpRanges
+    minAllowedPrefixLength: minAllowedPrefixLength
+    restrictPublicAccess: restrictPublicAccess
   }
 }
 
@@ -243,3 +258,6 @@ output logAnalyticsWorkspaceName string = logAnalytics.outputs.name
 
 @description('Application Insights component name.')
 output applicationInsightsName string = applicationInsights.outputs.name
+
+@description('True while Container App ingress is limited to allowedIpRanges.')
+output publicAccessRestricted bool = restrictPublicAccess

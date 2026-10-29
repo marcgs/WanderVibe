@@ -57,9 +57,10 @@ cd_lines() {
 }
 
 run_cd() {
-  env -u AZURE_CLIENT_ID -u AZURE_TENANT_ID -u AZURE_SUBSCRIPTION_ID \
+  env -u AZURE_TENANT_ID -u AZURE_SUBSCRIPTION_ID \
     -u STAGING_AZURE_RESOURCE_GROUP -u STAGING_AZURE_CONTAINER_REGISTRY \
     -u PROD_AZURE_RESOURCE_GROUP -u PROD_AZURE_CONTAINER_REGISTRY \
+    -u PROD_GATE_CONFIRMED -u AZURE_BUILD_CLIENT_ID -u AZURE_CLIENT_ID \
     "$@" bash scripts/cd-enabled.sh >"$out"
 }
 
@@ -67,32 +68,36 @@ run_cd
 cd_lines "$out"
 [[ "$staging" == false && "$prod" == false ]] || fail "unset variables should skip both"
 run_cd \
-  AZURE_CLIENT_ID=client AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
+  AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
   STAGING_AZURE_RESOURCE_GROUP=rg-wandervibe-staging STAGING_AZURE_CONTAINER_REGISTRY=acrstaging
 cd_lines "$out"
 [[ "$staging" == true && "$prod" == false ]] || fail "staging variables should skip prod"
 run_cd \
-  AZURE_CLIENT_ID=client AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
+  AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
   STAGING_AZURE_RESOURCE_GROUP=rg-wandervibe-staging STAGING_AZURE_CONTAINER_REGISTRY=acrstaging \
   PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod
 cd_lines "$out"
-[[ "$staging" == true && "$prod" == true ]] || fail "all variables should enable both"
-run_cd DEPLOY_TARGET=prod \
-  AZURE_CLIENT_ID=client AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
+[[ "$staging" == true && "$prod" == false ]] || fail "prod stays off until the reviewer gate is confirmed"
+run_cd \
+  AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
   STAGING_AZURE_RESOURCE_GROUP=rg-wandervibe-staging STAGING_AZURE_CONTAINER_REGISTRY=acrstaging \
-  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod
+  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod \
+  PROD_GATE_CONFIRMED=true
 cd_lines "$out"
-[[ "$staging" == false && "$prod" == true ]] || fail "prod target should skip staging"
+[[ "$staging" == true && "$prod" == true ]] || fail "confirmed prod gate should enable prod"
 run_cd DEPLOY_TARGET=staging \
-  AZURE_CLIENT_ID=client AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
+  AZURE_TENANT_ID=tenant AZURE_SUBSCRIPTION_ID=sub \
   STAGING_AZURE_RESOURCE_GROUP=rg-wandervibe-staging STAGING_AZURE_CONTAINER_REGISTRY=acrstaging \
-  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod
+  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod \
+  PROD_GATE_CONFIRMED=true
 cd_lines "$out"
 [[ "$staging" == true && "$prod" == false ]] || fail "staging target should skip prod"
 run_cd \
-  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod
+  PROD_AZURE_RESOURCE_GROUP=rg-wandervibe-prod PROD_AZURE_CONTAINER_REGISTRY=acrprod \
+  PROD_GATE_CONFIRMED=true
 cd_lines "$out"
 [[ "$staging" == false && "$prod" == false ]] || fail "prod variables alone should skip prod"
+expect_fail "prod target" env DEPLOY_TARGET=prod bash scripts/cd-enabled.sh
 expect_fail "bad target" env DEPLOY_TARGET=production bash scripts/cd-enabled.sh
 
 tmp="$(mktemp -d)"
@@ -222,6 +227,15 @@ if [[ "$*" == *'access-restriction remove'* ]]; then
   fi
   exit 0
 fi
+if [[ "$*" == *'execution list'* ]]; then
+  if [[ -n "${AZ_RUNNING_EXECUTION:-}" ]]; then
+    printf '%s\n' "$AZ_RUNNING_EXECUTION"
+  fi
+  exit 0
+fi
+if [[ "$*" == *'job stop'* ]]; then
+  exit 0
+fi
 if [[ "$*" == *'job start'* ]]; then
   count_file="${AZ_LOG}.starts"
   starts=0
@@ -236,6 +250,10 @@ if [[ "$*" == *'job start'* ]]; then
   exit 0
 fi
 if [[ "$*" == *'execution show'* ]]; then
+  if [[ -n "${AZ_MIGRATION_HANG:-}" ]]; then
+    printf '%s\n' Running
+    exit 0
+  fi
   count_file="${AZ_LOG}.polls"
   polls=0
   [[ -f "$count_file" ]] && polls="$(cat "$count_file")"
@@ -306,6 +324,23 @@ expect_fail "migration failed" env AZ_MIGRATION_FAIL=1 MIGRATION_POLL_SECONDS=0 
 unset AZ_MIGRATION_FAIL AZ_START_SUCCEEDS_ON
 
 : >"$AZ_LOG"
+rm -f "$AZ_LOG.starts" "$AZ_LOG.polls"
+AZ_START_SUCCEEDS_ON=99 AZ_RUNNING_EXECUTION=job-already \
+  MIGRATION_POLL_SECONDS=0 MIGRATION_TIMEOUT_SECONDS=5 \
+  bash scripts/wait-for-migration.sh rg job-wv-staging-migrate >"$out" 2>&1
+grep -q "job-already is already running" "$out" || fail "a failed start started a second execution"
+starts="$(grep -c 'job start' "$AZ_LOG" || true)"
+[[ "$starts" -eq 1 ]] || fail "start was retried after an execution was already running"
+unset AZ_RUNNING_EXECUTION AZ_START_SUCCEEDS_ON
+
+: >"$AZ_LOG"
+rm -f "$AZ_LOG.starts" "$AZ_LOG.polls"
+expect_fail "migration timeout" env AZ_MIGRATION_HANG=1 MIGRATION_POLL_SECONDS=0 MIGRATION_TIMEOUT_SECONDS=0 \
+  bash scripts/wait-for-migration.sh rg job-wv-staging-migrate
+grep -q 'job stop' "$AZ_LOG" || fail "a timed-out migration was not stopped"
+unset AZ_MIGRATION_HANG
+
+: >"$AZ_LOG"
 expect_fail "deploy refuses initial" bash scripts/deploy-cd.sh infra/cd.staging.bicepparam dep rg initial false true
 [[ ! -s "$AZ_LOG" ]] || fail "initial tag reached az"
 bash scripts/deploy-cd.sh infra/cd.staging.bicepparam wandervibe-staging-job rg "$sha" false true >"$out"
@@ -319,12 +354,17 @@ if grep -q RUNNER_CIDR scripts/deploy-cd.sh; then
 fi
 
 : >"$AZ_LOG"
-bash scripts/import-image.sh acrwvprd.example.azurecr.io acrwvstg.example.azurecr.io "$sha" >"$out"
+source_id="/subscriptions/sub/resourceGroups/rg-wandervibe-staging/providers/Microsoft.ContainerRegistry/registries/acrstaging"
+bash scripts/import-image.sh acrprod "$source_id" "$sha" >"$out"
 imports="$(grep -c 'acr import' "$AZ_LOG")"
 [[ "$imports" -eq 2 ]] || fail "import did not copy both images"
-grep -q "wandervibe:${sha}" "$AZ_LOG" || fail "import missed the app image"
-grep -q "wandervibe-migrate:${sha}" "$AZ_LOG" || fail "import missed the migrate image"
+grep -q -- "--registry ${source_id}" "$AZ_LOG" || fail "import did not use the staging registry resource id"
+grep -q -- "--source wandervibe:${sha}" "$AZ_LOG" || fail "import missed the app image"
+grep -q -- "--source wandervibe-migrate:${sha}" "$AZ_LOG" || fail "import missed the migrate image"
 grep -q -- '--force' "$AZ_LOG" || fail "import did not force the tag"
+if grep -q 'azurecr.io/' "$AZ_LOG"; then
+  fail "import used a login-server source"
+fi
 
 if grep -nE '^param containerImageTag' infra/*.bicepparam; then
   fail "parameter files must not set containerImageTag"
@@ -386,8 +426,11 @@ if indexes != sorted(indexes):
 
 if workflow.count("if: steps.deploy.outputs.restricted == 'true'") != 2:
     raise SystemExit("resolve and allow must share the restricted if")
-if "if: always()" not in workflow.split("name: Remove runner rule", 1)[1]:
-    raise SystemExit("cleanup must be if: always()")
+cleanup = workflow.split("name: Remove runner rule", 1)[1]
+if "if: always() && steps.login.outcome == 'success'" not in cleanup:
+    raise SystemExit("cleanup must run only after a successful Azure login")
+if "id: login" not in workflow.split("name: Remove runner rule", 1)[0]:
+    raise SystemExit("the Azure login step needs an id so cleanup can see it")
 for needle in (
     "group: deploy-${{ inputs.environment_name }}",
     "cancel-in-progress: false",
@@ -410,14 +453,80 @@ for needle in ("client-secret", "AZURE_CREDENTIALS", "creds:", "POSTGRES_ADMIN_P
 for needle in (
     "environment_name: staging",
     "environment_name: prod",
-    "group: wandervibe-cd",
-    "cancel-in-progress: false",
-    "vars.AZURE_CLIENT_ID",
     "vars.STAGING_AZURE_CONTAINER_REGISTRY",
     "vars.PROD_AZURE_CONTAINER_REGISTRY",
+    "vars.PROD_GATE_CONFIRMED",
+    "needs.deploy-staging.result == 'success'",
+    "image_tag: ${{ needs.build.outputs.image_tag }}",
 ):
     if needle not in caller:
         raise SystemExit(f"caller missing {needle}")
+if caller.count("image_tag: ${{ needs.build.outputs.image_tag }}") != 2:
+    raise SystemExit("staging and prod must deploy the same image tag from this run")
+if "wandervibe-cd" in caller:
+    raise SystemExit("a workflow-level concurrency group would hold staging behind prod approval")
+if "AZURE_BUILD_CLIENT_ID" in caller or "refs/heads/main" in caller:
+    raise SystemExit("the build must not use a branch credential or a separate client id")
+if "skipped" in caller.split("deploy-prod:", 1)[1]:
+    raise SystemExit("deploy-prod must not run when staging was skipped")
+prod_job = caller.split("deploy-prod:", 1)[1]
+if "needs.deploy-staging.result == 'success'" not in prod_job.split("uses:", 1)[0]:
+    raise SystemExit("deploy-prod can run without a successful staging deploy")
+first_permissions = caller.split("permissions:", 1)[1].split("jobs:", 1)[0]
+if "id-token" in first_permissions:
+    raise SystemExit("top-level permissions must be contents: read only")
+if caller.count("id-token: write") != 3:
+    raise SystemExit("id-token: write belongs on build, deploy-staging, and deploy-prod")
+
+def jobs(text):
+    blocks = {}
+    name = None
+    body = []
+    in_jobs = False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        if line.startswith("  ") and not line.startswith("   ") and line.endswith(":") and line.strip() != "jobs:":
+            if name is not None:
+                blocks[name] = "\n".join(body)
+            name = line.strip()[:-1]
+            body = [line]
+            continue
+        if name is not None:
+            body.append(line)
+    if name is not None:
+        blocks[name] = "\n".join(body)
+    return blocks
+
+for label, text in (("deploy-environment", workflow), ("deploy", caller)):
+    for name, block in jobs(text).items():
+        if "azure/login@" not in block:
+            continue
+        if not any(line.startswith("    environment:") for line in block.splitlines()):
+            raise SystemExit(f"{label} job {name} runs azure/login without environment:")
+build_job = jobs(caller)["build"]
+if not any(line.strip() == "environment: staging" for line in build_job.splitlines()):
+    raise SystemExit("the build job must select the staging environment")
 PY
+
+bicep test infra/tests/image-tag.test.bicep
+rejected_log="${tmp}/image-tag-rejected.log"
+set +e
+bicep test infra/tests/image-tag-rejected.test.bicep >"${rejected_log}" 2>&1
+rejected_status=$?
+set -e
+if [[ "${rejected_status}" -eq 0 ]]; then
+  echo "empty and initial tags were accepted"
+  cat "${rejected_log}"
+  exit 1
+fi
+grep -q "An empty tag or initial is refused" "${rejected_log}" || fail "image-tag rejection did not name the tag"
+grep -q "Evaluation initial" "${rejected_log}" || fail "initial tag was not evaluated"
+grep -q "Evaluation empty" "${rejected_log}" || fail "empty tag was not evaluated"
+grep -q 'replicaTimeout: 600' infra/modules/migration-job.bicep
+grep -q 'MIGRATION_TIMEOUT_SECONDS:-720' scripts/wait-for-migration.sh
 
 echo "Continuous deployment checks passed."

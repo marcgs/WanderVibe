@@ -181,7 +181,7 @@ Resolve the address after Deploy, in the same job, and only when `publicAccessRe
 - name: Smoke test
   run: bash scripts/smoke-test.sh "https://${FQDN}"
 - name: Remove runner rule
-  if: always()
+  if: always() && steps.login.outcome == 'success'
   run: |
     rule="gh-run-${GITHUB_RUN_ID}"
     present="$(az containerapp ingress access-restriction list \
@@ -203,7 +203,7 @@ Resolve the address after Deploy, in the same job, and only when `publicAccessRe
 
 Skip the temporary rule when the deployment output `publicAccessRestricted` is false. That is the state after story #15, once `restrictPublicAccess` is false and ingress is already open. Adding an Allow rule then would allow only this runner for the smoke test and lock everyone else out. Removing it would open ingress again. The `if` on the add step skips that. The remove step still runs. The rule is absent, the count is 0, and it prints that there is nothing to remove.
 
-`if: always()` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled. `az containerapp ingress access-restriction remove` raises `ValidationError` when that name is absent, which is what happens when Deploy, the lookup, or the add step fails first. Count the rule with `access-restriction list` and remove it only when the count is not 0. A real remove failure still fails the job. A missing rule does not. Counting the live list also covers an add that succeeded on the server and then errored in the client.
+`if: always() && steps.login.outcome == 'success'` removes `gh-run-${GITHUB_RUN_ID}` when the smoke test fails or the job is cancelled, and only after Azure login succeeded. A failed login does not try to remove a rule that was never added. `az containerapp ingress access-restriction remove` raises `ValidationError` when that name is absent, which is what happens when Deploy, the lookup, or the add step fails first. Count the rule with `access-restriction list` and remove it only when the count is not 0. A real remove failure still fails the job. A missing rule does not. Counting the live list also covers an add that succeeded on the server and then errored in the client.
 
 That removal must not leave the rule list empty. An empty `ipSecurityRestrictions` list allows every client. The Bicep deploy has already installed the sentinel rule `closed-until-allowlist`, or the operator Allow rules, before the runner rule is added. Cleanup removes only `gh-run-${GITHUB_RUN_ID}`. It leaves the sentinel and the operator rules in place. `az containerapp ingress access-restriction set` reads the current rules, adds this one, and writes the whole `ipSecurityRestrictions` array back. Two overlapping runs can clobber that array. The `deploy-<env>` concurrency group, with `cancel-in-progress: false`, is what prevents that. It also keeps the running job alive long enough to reach the remove step. If the runner dies before that step, the next IaC deploy rewrites the list from the operator ranges, or from the sentinel when those ranges are empty, and the leftover runner rule is gone.
 
@@ -274,10 +274,10 @@ az group create --name rg-wandervibe-staging --location switzerlandnorth
 az group create --name rg-wandervibe-prod --location switzerlandnorth
 ```
 
-Export the database password in the shell you will use for `what-if` and `create`:
+Export the database password in the shell you will use for `what-if` and `create`. The `Aa1!` suffix keeps a character from each class Azure requires:
 
 ```bash
-export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)Aa1!"
 ```
 
 Use a different password for production than for staging. Keep the value until that environment's deployment has written Key Vault.
@@ -332,7 +332,7 @@ docker build --tag "<containerRegistryLoginServer>/wandervibe:${sha}" .
 docker push "<containerRegistryLoginServer>/wandervibe:${sha}"
 ```
 
-Create the Container App against that tag. The default of `deployContainerApp` is true, so this run creates the app. Pass `containerImageTag`. An empty tag or `initial` fails the deployment before the app is updated. A short SHA is fine for this manual command. Continuous deployment uses the full 40-character SHA. Ingress is closed unless `WANDER_ALLOWED_IP_RANGES` lists this machine. The [Ingress allowlist](#ingress-allowlist) section covers that variable, the 403 check, and the story #14 smoke test.
+Create the Container App against that tag. The default of `deployContainerApp` is true, so this run creates the app. Pass `containerImageTag`. An empty tag or `initial` fails the deployment before the app is updated. A short SHA is fine for this manual command. Continuous deployment uses the full 40-character SHA. After that workflow owns the running image, a later `infra/main.bicep` deployment that includes the Container App must pass the tag already deployed, or set `deployContainerApp=false`. Otherwise the manual deployment and the workflow overwrite each other's image. Ingress is closed unless `WANDER_ALLOWED_IP_RANGES` lists this machine. The [Ingress allowlist](#ingress-allowlist) section covers that variable, the 403 check, and the story #14 smoke test.
 
 ```bash
 az deployment group create \

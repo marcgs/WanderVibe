@@ -121,6 +121,10 @@ jobs:
             --entrypoint npx \
             wandervibe-migrate:ci \
             --no-install prisma --version
+          docker run --rm \
+            --entrypoint sh \
+            wandervibe-migrate:ci \
+            -c 'ls prisma/migrations/*/migration.sql >/dev/null'
 
       - name: Check container health
         run: |

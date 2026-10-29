@@ -8,13 +8,13 @@ The workflow does not deploy until the repository variables below are set. A pus
 
 ## What a deploy does
 
-1. The build job logs in with the `main` branch federated credential, builds `wandervibe:<full-sha>` and `wandervibe-migrate:<full-sha>`, and pushes both to the staging registry.
+1. The build job selects the GitHub Environment `staging` and logs in as `id-wv-cd-staging`. It builds `wandervibe:<full-sha>` and `wandervibe-migrate:<full-sha>` and pushes both to the staging registry.
 2. The staging job logs in with the `staging` environment credential. It updates the migration job to that tag, runs `prisma migrate deploy`, then updates the Container App to the same tag. It passes `containerImageTag` every time. An empty tag or `initial` fails before Azure creates a revision.
 3. The staging job calls `https://<container-app-fqdn>/api/health` and `https://<container-app-fqdn>/api/ready`. Both must return 200 and `{ "status": "ok" }`. Each path gets 30 attempts, 10 seconds apart.
 4. The prod job waits for the GitHub Environment `prod`. It imports the same two tags into the prod registry, then migrates and deploys. It does not build the image again.
-5. While `publicAccessRestricted` is true, the runner's IPv4 address is allowed only after Deploy, as the rule `gh-run-<run id>`, and an `if: always()` step removes that rule when it is present.
+5. While `publicAccessRestricted` is true, the runner's IPv4 address is allowed only after Deploy, as the rule `gh-run-<run id>`. An `if: always()` step removes that rule when it is present, and only if Azure login succeeded.
 
-Prod does not start until staging has succeeded. A run waits for the previous run, including a pending prod approval, so an older commit cannot deploy on top of a newer one.
+Prod does not start until the staging deploy and its smoke test for that same commit SHA have succeeded in this run. A pending prod approval does not block the next staging deploy. Two deploys of one environment still wait for each other.
 
 ## One-time setup
 
@@ -31,10 +31,10 @@ az group create --name rg-wandervibe-prod --location switzerlandnorth
 
 ### 2. Bootstrap the platform
 
-This is the first deployment from [docs/infra.md](infra.md). The Container App is left out because the registry is empty. Export a password of 16 to 128 characters that meets Azure's password rules, then preview and create staging:
+This is the first deployment from [docs/infra.md](infra.md). The Container App is left out because the registry is empty. Export a password of 16 to 128 characters. The `Aa1!` suffix guarantees an uppercase letter, a lowercase letter, a digit, and a symbol, which is what Azure requires even when the random part is unlucky. Then preview and create staging:
 
 ```bash
-export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+export POSTGRES_ADMIN_PASSWORD="$(openssl rand -base64 24)Aa1!"
 az deployment group what-if \
   --resource-group rg-wandervibe-staging \
   --parameters infra/main.staging.bicepparam \
@@ -59,118 +59,105 @@ Record these outputs for each environment. They are not secret:
 
 `deployContainerApp=false` does not need an image tag. A later deployment that creates the app without `containerImageTag`, or with `initial`, fails and does not roll out a revision.
 
-### 3. Create the CD identity
+### 3. Create the CD identities
 
-Create a resource group that holds only the identity. Do not grant the identity a role on this group.
+Create a resource group that holds only the identities. Do not grant either identity a role on this group.
 
 ```bash
 az group create --name rg-wandervibe-cd --location switzerlandnorth
-az identity create \
-  --name id-wv-cd \
-  --resource-group rg-wandervibe-cd
+az identity create --name id-wv-cd-staging --resource-group rg-wandervibe-cd
+az identity create --name id-wv-cd-prod --resource-group rg-wandervibe-cd
 ```
 
-Read the values the GitHub variables need:
+Each identity has exactly one federated credential, for its own GitHub Environment. There is no `ref:refs/heads/main` credential. A job that does not select an environment cannot obtain an Azure token. The build job selects `staging`, so it logs in as `id-wv-cd-staging`.
+
+The issuer is `https://token.actions.githubusercontent.com`. The audience is `api://AzureADTokenExchange`.
 
 ```bash
-az identity show \
-  --name id-wv-cd \
-  --resource-group rg-wandervibe-cd \
-  --query "{clientId: clientId, principalId: principalId}" \
-  --output json
-az account show --query "{tenantId: tenantId, subscriptionId: id}" --output json
-```
-
-Create three federated credentials. The issuer is `https://token.actions.githubusercontent.com`. The audience is `api://AzureADTokenExchange`.
-
-```bash
-az identity federated-credential create \
-  --name main \
-  --identity-name id-wv-cd \
-  --resource-group rg-wandervibe-cd \
-  --issuer https://token.actions.githubusercontent.com \
-  --subject repo:marcgs/WanderVibe:ref:refs/heads/main \
-  --audiences api://AzureADTokenExchange
 az identity federated-credential create \
   --name staging \
-  --identity-name id-wv-cd \
+  --identity-name id-wv-cd-staging \
   --resource-group rg-wandervibe-cd \
   --issuer https://token.actions.githubusercontent.com \
   --subject repo:marcgs/WanderVibe:environment:staging \
   --audiences api://AzureADTokenExchange
 az identity federated-credential create \
   --name prod \
-  --identity-name id-wv-cd \
+  --identity-name id-wv-cd-prod \
   --resource-group rg-wandervibe-cd \
   --issuer https://token.actions.githubusercontent.com \
   --subject repo:marcgs/WanderVibe:environment:prod \
   --audiences api://AzureADTokenExchange
 ```
 
-Do not create a client secret.
+Do not create a client secret. Do not add a second credential to either identity.
 
-A job that sets `environment:` presents the environment subject, so the `main` credential does not authenticate the staging or prod jobs. The build job selects no environment and uses the `main` credential.
+Read the client ids and principal ids. The client id of `id-wv-cd-staging` is `AZURE_CLIENT_ID` on the `staging` environment. The client id of `id-wv-cd-prod` is `AZURE_CLIENT_ID` on the `prod` environment.
+
+```bash
+az identity show --name id-wv-cd-staging --resource-group rg-wandervibe-cd \
+  --query "{clientId: clientId, principalId: principalId}" --output json
+az identity show --name id-wv-cd-prod --resource-group rg-wandervibe-cd \
+  --query "{clientId: clientId, principalId: principalId}" --output json
+az account show --query "{tenantId: tenantId, subscriptionId: id}" --output json
+```
+
+Confirm each identity has one credential and only the roles from the next section:
+
+```bash
+az identity federated-credential list \
+  --identity-name id-wv-cd-staging --resource-group rg-wandervibe-cd --output table
+az identity federated-credential list \
+  --identity-name id-wv-cd-prod --resource-group rg-wandervibe-cd --output table
+az role assignment list --assignee "<staging principalId>" --all --output table
+az role assignment list --assignee "<prod principalId>" --all --output table
+```
 
 #### App registration instead of a user-assigned identity
 
-Skip the `az identity` commands above if you use an app registration. Create the application and its service principal, and do not create a client secret:
-
-```bash
-app_id="$(az ad app create --display-name wandervibe-cd --query appId --output tsv)"
-az ad sp create --id "$app_id"
-principal_id="$(az ad sp show --id "$app_id" --query id --output tsv)"
-```
-
-`AZURE_CLIENT_ID` is `app_id`. Role assignments use `principal_id`. The federated-credential subjects, issuer, and audience are the same three values:
-
-```bash
-az ad app federated-credential create --id "$app_id" --parameters '{
-  "name": "main",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:marcgs/WanderVibe:ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-az ad app federated-credential create --id "$app_id" --parameters '{
-  "name": "staging",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:marcgs/WanderVibe:environment:staging",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-az ad app federated-credential create --id "$app_id" --parameters '{
-  "name": "prod",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:marcgs/WanderVibe:environment:prod",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-```
+Use two app registrations, `wandervibe-cd-staging` and `wandervibe-cd-prod`, if you do not use user-assigned identities. Do not create a client secret. Each application gets one federated credential, with the subject above. `AZURE_CLIENT_ID` is that application's app id. Role assignments use the service principal object id (`az ad sp show --id "$app_id" --query id`).
 
 ### 4. Role assignments
 
-Set `principal_id` from step 3. Set the registry names from the bootstrap outputs.
+Set the principal ids from step 3 and the registry names from the bootstrap outputs. Neither identity gets a role on the other environment's resource group.
 
 ```bash
-principal_id="<principalId>"
+staging_principal="<staging principalId>"
+prod_principal="<prod principalId>"
 staging_acr="<containerRegistryName from staging>"
 prod_acr="<containerRegistryName from prod>"
 sub="$(az account show --query id --output tsv)"
+staging_acr_id="/subscriptions/${sub}/resourceGroups/rg-wandervibe-staging/providers/Microsoft.ContainerRegistry/registries/${staging_acr}"
+prod_acr_id="/subscriptions/${sub}/resourceGroups/rg-wandervibe-prod/providers/Microsoft.ContainerRegistry/registries/${prod_acr}"
 
 az role assignment create \
-  --assignee-object-id "$principal_id" \
+  --assignee-object-id "$staging_principal" \
   --assignee-principal-type ServicePrincipal \
   --role AcrPush \
-  --scope "/subscriptions/${sub}/resourceGroups/rg-wandervibe-staging/providers/Microsoft.ContainerRegistry/registries/${staging_acr}"
+  --scope "$staging_acr_id"
 az role assignment create \
-  --assignee-object-id "$principal_id" \
-  --assignee-principal-type ServicePrincipal \
-  --role AcrPush \
-  --scope "/subscriptions/${sub}/resourceGroups/rg-wandervibe-prod/providers/Microsoft.ContainerRegistry/registries/${prod_acr}"
-az role assignment create \
-  --assignee-object-id "$principal_id" \
+  --assignee-object-id "$staging_principal" \
   --assignee-principal-type ServicePrincipal \
   --role Contributor \
   --scope "/subscriptions/${sub}/resourceGroups/rg-wandervibe-staging"
+
 az role assignment create \
-  --assignee-object-id "$principal_id" \
+  --assignee-object-id "$prod_principal" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Container Registry Data Importer and Data Reader" \
+  --scope "$staging_acr_id"
+az role assignment create \
+  --assignee-object-id "$prod_principal" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Container Registry Data Importer and Data Reader" \
+  --scope "$prod_acr_id"
+az role assignment create \
+  --assignee-object-id "$prod_principal" \
+  --assignee-principal-type ServicePrincipal \
+  --role AcrPush \
+  --scope "$prod_acr_id"
+az role assignment create \
+  --assignee-object-id "$prod_principal" \
   --assignee-principal-type ServicePrincipal \
   --role Contributor \
   --scope "/subscriptions/${sub}/resourceGroups/rg-wandervibe-prod"
@@ -178,28 +165,33 @@ az role assignment create \
 
 Every role assignment:
 
-| Role                   | Principal       | Scope                   | Created by         |
-| ---------------------- | --------------- | ----------------------- | ------------------ |
-| AcrPull                | `id-wv-staging` | Staging registry        | `infra/main.bicep` |
-| Key Vault Secrets User | `id-wv-staging` | Staging Key Vault       | `infra/main.bicep` |
-| AcrPull                | `id-wv-prod`    | Prod registry           | `infra/main.bicep` |
-| Key Vault Secrets User | `id-wv-prod`    | Prod Key Vault          | `infra/main.bicep` |
-| AcrPush                | CD identity     | Staging registry        | This step          |
-| AcrPush                | CD identity     | Prod registry           | This step          |
-| Contributor            | CD identity     | `rg-wandervibe-staging` | This step          |
-| Contributor            | CD identity     | `rg-wandervibe-prod`    | This step          |
+| Role                                             | Principal          | Scope                   | Created by                                                             |
+| ------------------------------------------------ | ------------------ | ----------------------- | ---------------------------------------------------------------------- |
+| AcrPull                                          | `id-wv-staging`    | Staging registry        | `infra/main.bicep`                                                     |
+| Key Vault Secrets User                           | `id-wv-staging`    | Staging Key Vault       | `infra/main.bicep`                                                     |
+| AcrPull                                          | `id-wv-prod`       | Prod registry           | `infra/main.bicep`                                                     |
+| Key Vault Secrets User                           | `id-wv-prod`       | Prod Key Vault          | `infra/main.bicep`                                                     |
+| AcrPush                                          | `id-wv-cd-staging` | Staging registry        | This step                                                              |
+| Contributor                                      | `id-wv-cd-staging` | `rg-wandervibe-staging` | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
+| Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Staging registry        | This step                                                              |
+| Container Registry Data Importer and Data Reader | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
+| AcrPush                                          | `id-wv-cd-prod`    | Prod registry           | This step                                                              |
+| Contributor                                      | `id-wv-cd-prod`    | `rg-wandervibe-prod`    | This step, until [#29](https://github.com/marcgs/WanderVibe/issues/29) |
 
-The app identity roles already exist from the bootstrap. The migration job uses that identity, so it can pull the migrate image and read `database-url`. The CD identity never receives a Key Vault data-plane role.
+`id-wv-cd-staging` can push to the staging registry and cannot push to the prod registry. `id-wv-cd-prod` can read and import from the staging registry, and can push and import on the prod registry. It cannot push to the staging registry.
 
-Do not assign any of these to the CD identity:
+The app identity roles already exist from the bootstrap. The migration job uses that identity, so it can pull the migrate image and read `database-url`. Neither CD identity receives a Key Vault data-plane role.
+
+Do not assign any of these to either CD identity:
 
 - Key Vault Secrets Officer
 - Key Vault Secrets User
 - Key Vault Administrator
 - Owner
 - User Access Administrator
+- Contributor on the other environment's resource group
 
-Contributor on the resource group deploys `infra/cd.bicep`, starts the job, and changes ingress rules. Writing a Key Vault secret from Bicep is a control-plane operation and is not part of the CD deployment. `infra/cd.bicep` does not write secrets and does not create role assignments, so the CD identity does not need `Microsoft.Authorization/roleAssignments/write`.
+Contributor on that identity's own resource group deploys `infra/cd.bicep`, starts the job, and changes ingress rules. It is broader than the deploy needs. [#29](https://github.com/marcgs/WanderVibe/issues/29) replaces it. While it is assigned, AcrPush on the registry in the same resource group is redundant in non-ABAC mode, because Contributor already includes registry push and pull. The explicit AcrPush and importer roles stay so the registry rights are still named when Contributor is removed. Writing a Key Vault secret from Bicep is a control-plane operation and is not part of the CD deployment. `infra/cd.bicep` does not write secrets and does not create role assignments, so the CD identity does not need `Microsoft.Authorization/roleAssignments/write`.
 
 If you have to read or write a secret outside a Bicep deployment, grant Key Vault Secrets Officer to your user for that task and delete the assignment when you are done. A Privileged Identity Management eligible assignment is the same idea when the tenant has it. Do that on your user, not on the CD identity. [docs/infra.md](infra.md) explains why a standing Secrets Officer role can read the database password.
 
@@ -207,37 +199,42 @@ Role changes can take a minute to apply.
 
 ### 5. GitHub environments
 
-In the repository settings, create two environments. Do this before you set the repository variables. If `prod` does not exist yet, the first prod job can create it with no reviewer.
+In the repository settings, create two environments before any deploy job runs. GitHub creates a missing environment with no protection rules the first time a job selects it. Do not let the prod job be that first use.
 
 **staging**
 
 - Name: `staging`
 - Required reviewers: none
 - Deployment branches: selected branch `main`
+- Environment variable `AZURE_CLIENT_ID`: client id of `id-wv-cd-staging`
 
 **prod**
 
 - Name: `prod`
 - Required reviewers: your GitHub user
+- Check "Prevent administrators from bypassing configured protection rules"
 - Deployment branches: selected branch `main`
+- Environment variable `AZURE_CLIENT_ID`: client id of `id-wv-cd-prod`
 
-The environment name is `prod`, matching `rg-wandervibe-prod` and the concurrency group `deploy-prod`.
+The environment name is `prod`, matching `rg-wandervibe-prod` and the concurrency group `deploy-prod`. Save the required reviewer and the bypass lock before you set `PROD_GATE_CONFIRMED` in the next section. Until that variable is `true`, the prod job does not run, so it cannot create the environment for you.
 
 ### 6. Repository variables
 
 Settings → Secrets and variables → Actions → Variables. These are variables, not secrets. There are no repository secrets.
 
-| Name                               | Value                                              |
-| ---------------------------------- | -------------------------------------------------- |
-| `AZURE_CLIENT_ID`                  | Client id from step 3                              |
-| `AZURE_TENANT_ID`                  | Tenant id from step 3                              |
-| `AZURE_SUBSCRIPTION_ID`            | Subscription id from step 3                        |
-| `STAGING_AZURE_RESOURCE_GROUP`     | `rg-wandervibe-staging`                            |
-| `STAGING_AZURE_CONTAINER_REGISTRY` | Staging `containerRegistryName`                    |
-| `STAGING_WANDER_ALLOWED_IP_RANGES` | Optional. Comma-separated operator CIDRs, or empty |
-| `PROD_AZURE_RESOURCE_GROUP`        | `rg-wandervibe-prod`                               |
-| `PROD_AZURE_CONTAINER_REGISTRY`    | Prod `containerRegistryName`                       |
-| `PROD_WANDER_ALLOWED_IP_RANGES`    | Optional. Comma-separated operator CIDRs, or empty |
+| Name                               | Value                                                                                                            |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `AZURE_TENANT_ID`                  | Tenant id from step 3                                                                                            |
+| `AZURE_SUBSCRIPTION_ID`            | Subscription id from step 3                                                                                      |
+| `STAGING_AZURE_RESOURCE_GROUP`     | `rg-wandervibe-staging`                                                                                          |
+| `STAGING_AZURE_CONTAINER_REGISTRY` | Staging `containerRegistryName`                                                                                  |
+| `STAGING_WANDER_ALLOWED_IP_RANGES` | Optional. Comma-separated operator CIDRs, or empty                                                               |
+| `PROD_AZURE_RESOURCE_GROUP`        | `rg-wandervibe-prod`                                                                                             |
+| `PROD_AZURE_CONTAINER_REGISTRY`    | Prod `containerRegistryName`                                                                                     |
+| `PROD_WANDER_ALLOWED_IP_RANGES`    | Optional. Comma-separated operator CIDRs, or empty                                                               |
+| `PROD_GATE_CONFIRMED`              | `true` only after the prod environment has you as a required reviewer and administrators cannot bypass that rule |
+
+`AZURE_CLIENT_ID` is not a repository variable. Set it on each GitHub Environment, as the previous section says. The build job and the staging deploy read the staging value. The prod deploy reads the prod value.
 
 Leave the allowed-range variables empty to keep ingress closed to every real client. To allow your own network, set a `/32` from the machine you use:
 
@@ -247,7 +244,7 @@ curl --fail --silent --show-error --ipv4 --max-time 10 https://api.ipify.org
 
 Append `/32`. The runner address is not one of these values. The workflow adds it itself, after Deploy, and removes it afterwards. The same rules as the Bicep allowlist apply: IPv4 CIDRs, prefix `/16` through `/32`, at most 32 entries.
 
-Staging can be configured before prod. Prod stays skipped until `PROD_AZURE_RESOURCE_GROUP` and `PROD_AZURE_CONTAINER_REGISTRY` are set. Prod also needs the staging variables, because it imports the image from the staging registry.
+Staging can be configured before prod. Prod stays skipped until its resource group, its registry, and `PROD_GATE_CONFIRMED=true` are all set. Prod also needs the staging variables, because it imports the image from the staging registry.
 
 ### 7. First CD deploy
 
@@ -268,9 +265,9 @@ The smoke test passes when both URLs return 200 and `{ "status": "ok" }`. `/api/
 
 The check is `scripts/smoke-test.sh`. It requests each path up to 30 times, waiting 10 seconds between attempts, with a 10 second cap on each request. Staging scales to zero, so the first attempts can fail while a replica starts. A 403 from a runner that was never allowed does not become a 200 by retrying. The runner rule is added before this step.
 
-The address lookup runs only when the deployment output `publicAccessRestricted` is the string `true`. The query is `to_string(properties.outputs.publicAccessRestricted.value)`. The script checks both ipify and checkip, requires an IPv4 literal, and writes `RUNNER_CIDR=<ip>/32` to `$GITHUB_ENV`. The Allow rule is `gh-run-<run id>` for that CIDR. `scripts/remove-runner-rule.sh` runs with `if: always()`. It lists the rules, removes `gh-run-<run id>` only when the count is not 0, and leaves `closed-until-allowlist` and the operator rules in place. A missing app or a missing rule prints that there is nothing to remove. A failed list or a failed remove fails the job.
+The address lookup runs only when the deployment output `publicAccessRestricted` is the string `true`. The query is `to_string(properties.outputs.publicAccessRestricted.value)`. The script checks both ipify and checkip, requires an IPv4 literal, and writes `RUNNER_CIDR=<ip>/32` to `$GITHUB_ENV`. The Allow rule is `gh-run-<run id>` for that CIDR. `scripts/remove-runner-rule.sh` runs with `if: always() && steps.login.outcome == 'success'`. A failed Azure login does not try to remove a rule that was never added. The step lists the rules, removes `gh-run-<run id>` only when the count is not 0, and leaves `closed-until-allowlist` and the operator rules in place. A missing app or a missing rule prints that there is nothing to remove. A failed list or a failed remove fails the job.
 
-The deploy jobs use concurrency groups `deploy-staging` and `deploy-prod` with `cancel-in-progress: false`.
+The deploy jobs use concurrency groups `deploy-staging` and `deploy-prod` with `cancel-in-progress: false`. A prod approval does not hold the staging group.
 
 When story #15 sets `restrictPublicAccess` to false, the output is false, and the workflow does not add a runner rule. Adding one would allow only the runner and lock everyone else out.
 
@@ -286,14 +283,14 @@ To put a previous image back on an environment:
 2. Actions → Deploy → Run workflow.
 3. Use the workflow from `main`.
 4. Set the image tag to that SHA.
-5. Set the target to `staging`, `prod`, or `both`.
+5. Set the target to `both`.
 
-The build job sees that the tag is not this commit and does not rebuild the checkout under that tag. The image must already be in the staging registry. Prod imports it again if you include prod. Approving the `prod` environment is still required for a prod target.
+There is no prod-only target. The same SHA is deployed to staging and smoke-tested in this run before prod is asked to approve it. The build job sees that the tag is not this commit and does not rebuild the checkout under that tag. The image must already be in the staging registry. Prod imports it from that registry after staging succeeds.
 
-Re-running an older Deploy workflow run deploys that run's SHA as well. Re-run the staging job, then approve prod if you want prod to follow.
+Use target `staging` when prod should stay on the current release. Re-running an older Deploy workflow run does the same thing for that run's SHA: staging first, then prod after approval.
 
 ## When the variables are unset
 
-`scripts/cd-enabled.sh` turns a deploy on only when the variables that job needs are non-empty. Staging needs `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `STAGING_AZURE_RESOURCE_GROUP`, and `STAGING_AZURE_CONTAINER_REGISTRY`. Prod needs those plus `PROD_AZURE_RESOURCE_GROUP` and `PROD_AZURE_CONTAINER_REGISTRY`. Anything missing skips that job. The workflow succeeds and prints that deploy was skipped.
+`scripts/cd-enabled.sh` turns a deploy on only when the repository variables that job needs are non-empty. Staging needs `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `STAGING_AZURE_RESOURCE_GROUP`, and `STAGING_AZURE_CONTAINER_REGISTRY`. Prod needs those plus `PROD_AZURE_RESOURCE_GROUP`, `PROD_AZURE_CONTAINER_REGISTRY`, and `PROD_GATE_CONFIRMED=true`. Anything missing skips that job. The workflow succeeds and prints that deploy was skipped. `AZURE_CLIENT_ID` is read later, from the GitHub Environment the job selects.
 
-Set the variables after the bootstrap, the identity, the credentials, the roles, and the GitHub environments exist. Prod stays off until both prod variables are set. Those two variables start the prod job, which waits for approval and then fails if the identity or the registry is wrong.
+Set the repository variables after the bootstrap, the identities, the credentials, the roles, and the GitHub environments exist. Leave `PROD_GATE_CONFIRMED` unset until the prod environment has a required reviewer and administrators cannot bypass it.

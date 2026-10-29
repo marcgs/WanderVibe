@@ -36,8 +36,8 @@ ENV HOME=/tmp
 ENV NPM_CONFIG_CACHE=/tmp/npm-cache
 ENV PRISMA_HIDE_UPDATE_MESSAGE=1
 
-RUN chown -R node:node /app
-
+# prisma migrate deploy only reads the schema and migrations. node_modules stays
+# owned by root and world-readable, so this stage does not copy it with chown.
 USER node
 
 CMD ["npx", "--no-install", "prisma", "migrate", "deploy"]

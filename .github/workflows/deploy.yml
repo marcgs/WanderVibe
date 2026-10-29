@@ -16,7 +16,6 @@ on:
         options:
           - both
           - staging
-          - prod
         default: both
       image_tag:
         description: Full commit SHA to redeploy. Empty builds and deploys this commit.
@@ -24,16 +23,10 @@ on:
         default: ""
         type: string
 
-# One run at a time, so an older commit cannot finish deploying after a newer one.
-# cancel-in-progress stays false so a running job can still remove its runner rule.
-concurrency:
-  group: wandervibe-cd
-  cancel-in-progress: false
-
-# id-token is required at this level so the reusable deploy workflow can log in with OIDC.
+# Each environment has its own concurrency group inside the deploy workflow.
+# A pending prod approval does not block the next staging deploy.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   preflight:
@@ -49,13 +42,13 @@ jobs:
       - name: Decide whether to deploy
         id: set
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           STAGING_AZURE_RESOURCE_GROUP: ${{ vars.STAGING_AZURE_RESOURCE_GROUP }}
           STAGING_AZURE_CONTAINER_REGISTRY: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
           PROD_AZURE_RESOURCE_GROUP: ${{ vars.PROD_AZURE_RESOURCE_GROUP }}
           PROD_AZURE_CONTAINER_REGISTRY: ${{ vars.PROD_AZURE_CONTAINER_REGISTRY }}
+          PROD_GATE_CONFIRMED: ${{ vars.PROD_GATE_CONFIRMED }}
           DEPLOY_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'both' }}
         run: |
           result="$(bash scripts/cd-enabled.sh)"
@@ -67,8 +60,9 @@ jobs:
 
   build:
     needs: preflight
-    if: needs.preflight.outputs.staging == 'true' || needs.preflight.outputs.prod == 'true'
+    if: needs.preflight.outputs.staging == 'true'
     runs-on: ubuntu-latest
+    environment: staging
     timeout-minutes: 30
     permissions:
       contents: read
@@ -76,6 +70,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
       login_server: ${{ steps.registry.outputs.login_server }}
+      registry_id: ${{ steps.registry.outputs.registry_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,7 +95,9 @@ jobs:
           BUILD: ${{ steps.tag.outputs.build }}
         run: |
           login="$(az acr show --name "$STAGING_AZURE_CONTAINER_REGISTRY" --query loginServer --output tsv)"
+          registry_id="$(az acr show --name "$STAGING_AZURE_CONTAINER_REGISTRY" --query id --output tsv)"
           echo "login_server=${login}" >> "$GITHUB_OUTPUT"
+          echo "registry_id=${registry_id}" >> "$GITHUB_OUTPUT"
           if [ "$BUILD" = "true" ]; then
             az acr login --name "$STAGING_AZURE_CONTAINER_REGISTRY"
           fi
@@ -148,6 +145,9 @@ jobs:
   deploy-staging:
     needs: [preflight, build]
     if: needs.preflight.outputs.staging == 'true' && needs.build.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/deploy-environment.yml
     with:
       environment_name: staging
@@ -157,7 +157,7 @@ jobs:
       registry_name: ${{ vars.STAGING_AZURE_CONTAINER_REGISTRY }}
       allowed_ip_ranges: ${{ vars.STAGING_WANDER_ALLOWED_IP_RANGES }}
       image_tag: ${{ needs.build.outputs.image_tag }}
-      import_from_login_server: ""
+      import_from_registry_id: ""
 
   deploy-prod:
     needs: [preflight, build, deploy-staging]
@@ -165,7 +165,10 @@ jobs:
       always() &&
       needs.preflight.outputs.prod == 'true' &&
       needs.build.result == 'success' &&
-      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped')
+      needs.deploy-staging.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/deploy-environment.yml
     with:
       environment_name: prod
@@ -175,4 +178,4 @@ jobs:
       registry_name: ${{ vars.PROD_AZURE_CONTAINER_REGISTRY }}
       allowed_ip_ranges: ${{ vars.PROD_WANDER_ALLOWED_IP_RANGES }}
       image_tag: ${{ needs.build.outputs.image_tag }}
-      import_from_login_server: ${{ needs.build.outputs.login_server }}
+      import_from_registry_id: ${{ needs.build.outputs.registry_id }}

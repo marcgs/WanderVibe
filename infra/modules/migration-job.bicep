@@ -41,6 +41,7 @@ resource job 'Microsoft.App/jobs@2026-01-01' = {
     environmentId: environmentId
     configuration: {
       triggerType: 'Manual'
+      // scripts/wait-for-migration.sh polls for this plus 120 seconds.
       replicaTimeout: 600
       replicaRetryLimit: 0
       manualTriggerConfig: {

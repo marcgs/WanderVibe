@@ -441,6 +441,9 @@ for needle in (
     'bash scripts/resolve-runner-cidr.sh >> "$GITHUB_ENV"',
     "--ip-address \"${RUNNER_CIDR}\"",
     "scripts/smoke-test.sh",
+    "AUTH_CONFIGURED: ${{ vars.AUTH_CONFIGURED }}",
+    "AUTH_GOOGLE_CONFIGURED: ${{ vars.AUTH_GOOGLE_CONFIGURED }}",
+    "AUTH_MICROSOFT_CONFIGURED: ${{ vars.AUTH_MICROSOFT_CONFIGURED }}",
 ):
     if needle not in workflow:
         raise SystemExit(f"workflow missing {needle}")
@@ -600,33 +603,37 @@ PY
 python3 - <<'PY'
 from pathlib import Path
 
-required = [
-    "AUTH_SECRET",
-    "AUTH_GOOGLE_ID",
-    "AUTH_GOOGLE_SECRET",
-    "AUTH_MICROSOFT_ENTRA_ID_ID",
-    "AUTH_MICROSOFT_ENTRA_ID_SECRET",
-    "AUTH_MICROSOFT_ENTRA_ID_ISSUER",
-    "auth-secret",
-    "auth-google-id",
-    "auth-google-secret",
-    "auth-microsoft-entra-id-id",
-    "auth-microsoft-entra-id-secret",
-    "auth-microsoft-entra-id-issuer",
-]
-env = Path("infra/modules/app-env.bicep").read_text()
 main = Path("infra/main.bicep").read_text()
 cd = Path("infra/cd.bicep").read_text()
-for name in required:
-    if name not in env:
-        raise SystemExit(f"app-env.bicep is missing {name}")
-if "modules/app-env.bicep" not in main or "modules/app-env.bicep" not in cd:
-    raise SystemExit("main.bicep and cd.bicep must both reference app-env.bicep")
-for path in Path("infra").glob("*.bicepparam"):
+for name, text in (("main.bicep", main), ("cd.bicep", cd)):
+    if "param authConfigured bool = false" not in text:
+        raise SystemExit(f"{name} must default authConfigured to false")
+    if "param googleAuthConfigured bool = false" not in text:
+        raise SystemExit(f"{name} must default googleAuthConfigured to false")
+    if "param microsoftAuthConfigured bool = false" not in text:
+        raise SystemExit(f"{name} must default microsoftAuthConfigured to false")
+    if "authConfigured: authConfigured" not in text:
+        raise SystemExit(f"{name} must pass authConfigured into app-env")
+for path in sorted(Path("infra").glob("*.bicepparam")):
     text = path.read_text()
+    for variable in ("AUTH_CONFIGURED", "AUTH_GOOGLE_CONFIGURED", "AUTH_MICROSOFT_CONFIGURED"):
+        if f"readEnvironmentVariable('{variable}', 'false')" not in text:
+            raise SystemExit(f"{path} must read {variable}")
     if "AUTH_SECRET" in text or "auth-secret" in text:
         raise SystemExit(f"{path} must not contain an auth secret")
-print("Auth secret references stay in the template, not in parameter files.")
+print("authConfigured defaults off and is driven by AUTH_CONFIGURED.")
 PY
+
+if grep -R -n -E 'AUTH_TEST_LOGIN|NODE_ENV' \
+  infra \
+  --include='*.bicep' \
+  --include='*.bicepparam' \
+  .github/workflows/deploy.yml \
+  .github/workflows/deploy-environment.yml; then
+  echo "AUTH_TEST_LOGIN and NODE_ENV must not be set by infra or the deploy workflows." >&2
+  exit 1
+fi
+
+bicep test infra/tests/auth-secrets.test.bicep
 
 echo "Continuous deployment checks passed."

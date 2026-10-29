@@ -242,7 +242,7 @@ The template stores these Key Vault secrets and gives them to the Container App 
 | `auth-microsoft-entra-id-secret`        | `AUTH_MICROSOFT_ENTRA_ID_SECRET`        | Entra client secret value                              |
 | `auth-microsoft-entra-id-issuer`        | `AUTH_MICROSOFT_ENTRA_ID_ISSUER`        | Entra issuer URL                                       |
 
-The template writes `database-url` and `applicationinsights-connection-string`. It only references the six auth secrets. Marc creates those with `az keyvault secret set` before the revision that reads them. [docs/deploy.md](deploy.md) has the commands. The values are not parameters and they are not GitHub secrets.
+The template writes `database-url` and `applicationinsights-connection-string`. It references `auth-secret` only when `authConfigured` is true, and it references a provider's secrets only when that provider's flag is also true. Those parameters default to false. The parameter files read `AUTH_CONFIGURED`, `AUTH_GOOGLE_CONFIGURED`, and `AUTH_MICROSOFT_CONFIGURED`. A deploy with auth off does not mention the auth secrets, so they do not have to exist yet. When auth is on, the app also gets `AUTH_URL` set to `https://<container-app-fqdn>`. [docs/deploy.md](deploy.md) has the order for turning auth on. The values are not parameters and they are not GitHub secrets.
 
 The app reads `DATABASE_URL` and the auth variables. It does not read the Application Insights variable until story #16. That reference is still created here so the connection string is never a plain environment variable or a file in git. The Container App identity already has Key Vault Secrets User, which is enough to read the auth secrets. Neither CD identity gets a Key Vault data-plane role.
 

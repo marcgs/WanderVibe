@@ -2,11 +2,10 @@ import type { Provider } from "next-auth/providers";
 import Google from "next-auth/providers/google";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 
-// Both providers verify the email address. Email sign-in, which Auth.js uses
-// to link accounts safely, is out of scope, so the same address from either
-// provider stays one User. See ADR-0004.
-const linkVerifiedEmail = { allowDangerousEmailAccountLinking: true } as const;
-
+// Account linking by email is off. Entra does not verify work or school
+// addresses, so linking would let a second provider take over a user.
+// A repeat sign-in with the same email and a different provider returns
+// OAuthAccountNotLinked. See ADR-0004.
 export function configuredProviders(
   env: NodeJS.ProcessEnv = process.env,
 ): Provider[] {
@@ -17,7 +16,6 @@ export function configuredProviders(
       Google({
         clientId: env.AUTH_GOOGLE_ID,
         clientSecret: env.AUTH_GOOGLE_SECRET,
-        ...linkVerifiedEmail,
       }),
     );
   }
@@ -28,7 +26,6 @@ export function configuredProviders(
         clientId: env.AUTH_MICROSOFT_ENTRA_ID_ID,
         clientSecret: env.AUTH_MICROSOFT_ENTRA_ID_SECRET,
         issuer: env.AUTH_MICROSOFT_ENTRA_ID_ISSUER || undefined,
-        ...linkVerifiedEmail,
       }),
     );
   }

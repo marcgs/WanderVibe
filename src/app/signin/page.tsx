@@ -8,6 +8,7 @@ import {
 import { safeCallbackUrl } from "@/lib/callback-url";
 import { configuredProviderFlags } from "@/lib/providers";
 import { isTestLoginEnabled } from "@/lib/test-login";
+import { SignInError } from "@/app/signin/sign-in-error";
 
 function SignInCard({ children }: { children?: ReactNode }) {
   return (
@@ -31,7 +32,10 @@ function SignInCard({ children }: { children?: ReactNode }) {
 async function SignInForm({
   searchParams,
 }: {
-  searchParams: Promise<{ callbackUrl?: string | string[] }>;
+  searchParams: Promise<{
+    callbackUrl?: string | string[];
+    error?: string | string[];
+  }>;
 }) {
   await connection();
   const params = await searchParams;
@@ -44,6 +48,7 @@ async function SignInForm({
   return (
     <SignInCard>
       <div className="mt-8 flex flex-col gap-3">
+        <SignInError error={params.error} />
         {providers.microsoft ? (
           <form action={signInWithMicrosoft}>
             <input type="hidden" name="callbackUrl" value={callbackUrl} />
@@ -84,7 +89,10 @@ async function SignInForm({
 export default function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ callbackUrl?: string | string[] }>;
+  searchParams: Promise<{
+    callbackUrl?: string | string[];
+    error?: string | string[];
+  }>;
 }) {
   return (
     <Suspense fallback={<SignInCard />}>

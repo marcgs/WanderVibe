@@ -4,7 +4,13 @@ import {
   type NextRequest,
 } from "next/server";
 import { auth } from "@/auth";
-import { decideAccess } from "@/lib/access";
+import {
+  decideAccess,
+  enforceAccess,
+  isAuthConfigured,
+  unauthorizedResponse,
+  unconfiguredPageResponse,
+} from "@/lib/access";
 import { safeCallbackUrl } from "@/lib/callback-url";
 
 // Auth.js types this wrapper as a route handler as well as proxy.
@@ -16,11 +22,10 @@ const withSession = auth((req) => {
   if (decision.kind === "public" || decision.kind === "allow") {
     return NextResponse.next();
   }
-  if (decision.kind === "unauthorized") {
-    return NextResponse.json(
-      { error: "unauthorized" },
-      { status: 401, headers: { "cache-control": "no-store" } },
-    );
+  if (decision.kind === "unauthorized" || decision.kind === "unconfigured") {
+    return decision.kind === "unauthorized"
+      ? unauthorizedResponse()
+      : unconfiguredPageResponse();
   }
 
   const url = req.nextUrl.clone();
@@ -39,8 +44,15 @@ const withSession = auth((req) => {
 ) => Promise<Response>;
 
 // Anonymous probes return before Auth.js looks up a session, so a database
-// outage does not fail liveness or the deploy smoke test.
+// outage does not fail liveness or the deploy smoke test. When auth is not
+// configured, no request calls Auth.js.
 export async function proxy(request: NextRequest, event: NextFetchEvent) {
+  if (!isAuthConfigured()) {
+    const decision = enforceAccess(request.nextUrl.pathname, false);
+    if (decision.kind === "public") return NextResponse.next();
+    if (decision.kind === "unauthorized") return unauthorizedResponse();
+    return unconfiguredPageResponse();
+  }
   if (decideAccess(request.nextUrl.pathname, false).kind === "public") {
     return NextResponse.next();
   }
@@ -48,7 +60,10 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
 }
 
 export const config = {
+  // /api is always included, even when the path ends in a file extension.
+  // Static files outside /api are skipped. Handlers still call requireApiUser().
   matcher: [
-    "/((?!_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/api/:path*",
+    "/((?!api/|_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

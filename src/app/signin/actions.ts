@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { signIn, signOut } from "@/auth";
 import { safeCallbackUrl } from "@/lib/callback-url";
 import { createTestSession } from "@/lib/create-test-session";
+import { requireApiUser } from "@/lib/require-api-user";
 import { isTestLoginEnabled } from "@/lib/test-login";
 
 function callbackFrom(formData: FormData) {
@@ -28,5 +29,7 @@ export async function signInAsTestTraveler(formData: FormData) {
 }
 
 export async function signOutAction() {
+  const user = await requireApiUser();
+  if (user instanceof Response) return;
   await signOut({ redirectTo: "/signin" });
 }

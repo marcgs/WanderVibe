@@ -7,41 +7,46 @@ param databaseUrlSecretName string
 @description('Key Vault secret that holds the Application Insights connection string. Written by infra/main.bicep.')
 param applicationInsightsSecretName string
 
-// Auth provider values are written by the operator with az keyvault secret set.
-// This module only builds references. See docs/deploy.md.
+@description('When true, reference auth-secret and set AUTH_URL. Provider secrets stay off until their own flags are true.')
+param authConfigured bool
+
+@description('When true with authConfigured, reference the Google client id and secret. No placeholder is created for a provider you are not using.')
+param googleAuthConfigured bool
+
+@description('When true with authConfigured, reference the Entra client id, secret, and issuer.')
+param microsoftAuthConfigured bool
+
+@description('Public origin, https://<container-app-fqdn>. Used as AUTH_URL only when authConfigured is true.')
+param authUrl string
+
+// One list for the template and for infra/tests/auth-secrets.test.bicep.
+// Provider flags do nothing until authConfigured is true, so a half-set
+// variable cannot point the app at a secret that does not exist.
+@export()
+func platformNames(databaseSecret string, insightsSecret string) string => 'DATABASE_URL=${databaseSecret},APPLICATIONINSIGHTS_CONNECTION_STRING=${insightsSecret}'
+
+@export()
+func googleNames(on bool) string => on ? ',AUTH_GOOGLE_ID=auth-google-id,AUTH_GOOGLE_SECRET=auth-google-secret' : ''
+
+@export()
+func microsoftNames(on bool) string => on ? ',AUTH_MICROSOFT_ENTRA_ID_ID=auth-microsoft-entra-id-id,AUTH_MICROSOFT_ENTRA_ID_SECRET=auth-microsoft-entra-id-secret,AUTH_MICROSOFT_ENTRA_ID_ISSUER=auth-microsoft-entra-id-issuer' : ''
+
+@export()
+func includedSecretNames(authOn bool, googleOn bool, microsoftOn bool, databaseSecret string, insightsSecret string) string =>
+  authOn
+    ? '${platformNames(databaseSecret, insightsSecret)},AUTH_SECRET=auth-secret${googleNames(googleOn)}${microsoftNames(microsoftOn)}'
+    : platformNames(databaseSecret, insightsSecret)
+
+@export()
+func plainEnvNames(authOn bool) string => authOn ? 'AUTH_URL' : ''
+
+var useGoogle = authConfigured && googleAuthConfigured
+var useMicrosoft = authConfigured && microsoftAuthConfigured
 
 var references = [
-  {
-    name: 'DATABASE_URL'
-    secret: databaseUrlSecretName
-  }
-  {
-    name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-    secret: applicationInsightsSecretName
-  }
-  {
-    name: 'AUTH_SECRET'
-    secret: 'auth-secret'
-  }
-  {
-    name: 'AUTH_GOOGLE_ID'
-    secret: 'auth-google-id'
-  }
-  {
-    name: 'AUTH_GOOGLE_SECRET'
-    secret: 'auth-google-secret'
-  }
-  {
-    name: 'AUTH_MICROSOFT_ENTRA_ID_ID'
-    secret: 'auth-microsoft-entra-id-id'
-  }
-  {
-    name: 'AUTH_MICROSOFT_ENTRA_ID_SECRET'
-    secret: 'auth-microsoft-entra-id-secret'
-  }
-  {
-    name: 'AUTH_MICROSOFT_ENTRA_ID_ISSUER'
-    secret: 'auth-microsoft-entra-id-issuer'
+  for pair in split(includedSecretNames(authConfigured, useGoogle, useMicrosoft, databaseUrlSecretName, applicationInsightsSecretName), ','): {
+    name: split(pair, '=')[0]
+    secret: split(pair, '=')[1]
   }
 ]
 
@@ -58,3 +63,12 @@ output secretEnvironmentVariables array = [
     secretRef: item.secret
   }
 ]
+
+output plainEnvironmentVariables array = authConfigured
+  ? [
+      {
+        name: 'AUTH_URL'
+        value: authUrl
+      }
+    ]
+  : []

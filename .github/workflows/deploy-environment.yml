@@ -62,6 +62,10 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ inputs.resource_group }}
       AZURE_CONTAINER_REGISTRY: ${{ inputs.registry_name }}
       WANDER_ALLOWED_IP_RANGES: ${{ inputs.allowed_ip_ranges }}
+      # GitHub Environment variables. Unset or anything other than true leaves that switch off.
+      AUTH_CONFIGURED: ${{ vars.AUTH_CONFIGURED }}
+      AUTH_GOOGLE_CONFIGURED: ${{ vars.AUTH_GOOGLE_CONFIGURED }}
+      AUTH_MICROSOFT_CONFIGURED: ${{ vars.AUTH_MICROSOFT_CONFIGURED }}
       IMAGE_TAG: ${{ inputs.image_tag }}
       IMPORT_FROM: ${{ inputs.import_from_registry_id }}
       APP_NAME: ca-wv-${{ inputs.environment_name }}

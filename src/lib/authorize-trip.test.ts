@@ -15,9 +15,9 @@ test("the owner can open their trip", () => {
   expect(authorizeTrip({ id: "owner-1" }, trip)).toEqual({ allowed: true });
 });
 
-test("another signed-in user cannot open the trip", () => {
+test("another signed-in user gets 404 so the trip is not revealed", () => {
   expect(authorizeTrip({ id: "someone-else" }, trip)).toEqual({
     allowed: false,
-    status: 403,
+    status: 404,
   });
 });

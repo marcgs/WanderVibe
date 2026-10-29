@@ -59,6 +59,15 @@ param minAllowedPrefixLength int = 16
 @description('When true, ingress allows only allowedIpRanges. Stays true in the parameter files. Set false only after sign-in is configured. See docs/deploy.md.')
 param restrictPublicAccess bool = true
 
+@description('When true, the Container App references auth-secret and sets AUTH_URL. Default false so a deploy succeeds before that secret exists. Parameter files read AUTH_CONFIGURED.')
+param authConfigured bool = false
+
+@description('When true with authConfigured, reference the Google client id and secret. Parameter files read AUTH_GOOGLE_CONFIGURED.')
+param googleAuthConfigured bool = false
+
+@description('When true with authConfigured, reference the Entra client id, secret, and issuer. Parameter files read AUTH_MICROSOFT_CONFIGURED.')
+param microsoftAuthConfigured bool = false
+
 var acceptedImageTag = requireImageTag(containerImageTag, deployContainerApp)
 
 var tags = {
@@ -172,6 +181,10 @@ module appEnv 'modules/app-env.bicep' = {
     keyVaultUri: keyVault.outputs.uri
     databaseUrlSecretName: names.outputs.databaseUrlSecretName
     applicationInsightsSecretName: names.outputs.applicationInsightsSecretName
+    authConfigured: authConfigured
+    googleAuthConfigured: googleAuthConfigured
+    microsoftAuthConfigured: microsoftAuthConfigured
+    authUrl: 'https://${names.outputs.containerAppName}.${containerAppsEnvironment.outputs.defaultDomain}'
   }
 }
 
@@ -193,6 +206,7 @@ module containerApp 'modules/container-app.bicep' = if (deployContainerApp) {
     maxReplicas: maxReplicas
     keyVaultSecrets: appEnv.outputs.keyVaultSecrets
     secretEnvironmentVariables: appEnv.outputs.secretEnvironmentVariables
+    plainEnvironmentVariables: appEnv.outputs.plainEnvironmentVariables
     allowedIpRanges: allowedIpRanges
     minAllowedPrefixLength: minAllowedPrefixLength
     restrictPublicAccess: restrictPublicAccess

@@ -50,7 +50,7 @@ test("the Prisma adapter stores a user, an account, and a session", async () => 
   expect(authorizeTrip({ id: user.id }, trip)).toEqual({ allowed: true });
   expect(authorizeTrip({ id: "someone-else" }, trip)).toEqual({
     allowed: false,
-    status: 403,
+    status: 404,
   });
   expect(authorizeTrip(null, trip)).toEqual({ allowed: false, status: 401 });
 

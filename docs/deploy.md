@@ -203,6 +203,9 @@ In the repository settings, create two environments before any deploy job runs. 
 - Required reviewers: none
 - Deployment branches: selected branch `main`
 - Environment variable `AZURE_CLIENT_ID`: client id of `id-wv-cd-staging`
+- Environment variable `AUTH_CONFIGURED`: leave unset until `auth-secret` exists. Set it to `true` to turn auth on. See [Sign-in](#sign-in).
+- Environment variable `AUTH_GOOGLE_CONFIGURED`: set to `true` only when the Google secrets exist. Leave unset to skip Google.
+- Environment variable `AUTH_MICROSOFT_CONFIGURED`: set to `true` only when the Entra secrets exist. Leave unset to skip Entra.
 
 The build job selects this environment, so every workflow run creates a GitHub deployment record for `staging` before the Container App changes. A required reviewer or a wait timer added here later would block image builds as well as deploys.
 
@@ -213,6 +216,9 @@ The build job selects this environment, so every workflow run creates a GitHub d
 - Check "Prevent administrators from bypassing configured protection rules"
 - Deployment branches: selected branch `main`
 - Environment variable `AZURE_CLIENT_ID`: client id of `id-wv-cd-prod`
+- Environment variable `AUTH_CONFIGURED`: leave unset until `auth-secret` exists. Set it to `true` to turn auth on. See [Sign-in](#sign-in).
+- Environment variable `AUTH_GOOGLE_CONFIGURED`: set to `true` only when the Google secrets exist. Leave unset to skip Google.
+- Environment variable `AUTH_MICROSOFT_CONFIGURED`: set to `true` only when the Entra secrets exist. Leave unset to skip Entra.
 
 The environment name is `prod`, matching `rg-wandervibe-prod` and the concurrency group `deploy-prod`. Save the required reviewer and the bypass lock before you set `PROD_GATE_CONFIRMED` in the next section. Until that variable is `true`, the prod job does not run, so it cannot create the environment for you.
 
@@ -273,27 +279,39 @@ On the first real staging deploy, also run the live checks in [docs/infra.md](in
 
 ## Sign-in
 
-Auth.js signs a traveler in with Microsoft Entra ID or Google and stores the session in Postgres. The decisions are in [ADR-0004](adr/ADR-0004-authentication.md). The Container App reads every provider value from Key Vault. The repository and the GitHub Actions variables do not hold them. There are no new repository secrets.
+Auth.js signs a traveler in with Microsoft Entra ID or Google and stores the session in Postgres. The decisions are in [ADR-0004](adr/ADR-0004-authentication.md). The Container App reads provider values from Key Vault only after auth is turned on. The repository and the GitHub Actions variables do not hold those values. There are no new repository secrets.
 
-Create the secrets before the first deploy of this revision. A Container App revision that references a missing secret fails. The app identity already has Key Vault Secrets User on the vault, from `infra/main.bicep`. You do not grant that role again. Do not grant it to either CD identity.
+Leave auth off for the first deploys. `authConfigured` defaults to false. The parameter files set it from the GitHub Environment variable `AUTH_CONFIGURED` (`true` turns it on; unset or any other value leaves it off). Set that variable on the `staging` environment and, separately, on the `prod` environment. It is not a repository variable, so one environment can turn on before the other. The deploy job copies it into the shell as `AUTH_CONFIGURED` before `az deployment group create`. A manual deploy of `infra/main.bicep` reads the same shell variable.
+
+While the flag is false, the template does not reference `auth-secret` or the provider secrets. A missing secret cannot fail the revision. The app starts. `/api/health` and `/api/ready` return 200 with no session. Every page returns plain text `Sign-in is not configured yet`. Every other API returns 401. The proxy does not call Auth.js in that state.
+
+Turn auth on in this order, after a deploy with the flag off has succeeded:
+
+1. Register the Entra ID app and the Google client, with the redirect URIs below.
+2. Write `auth-secret` and the secrets for each provider you will use. You can use only Google, only Entra, or both. Do not create placeholder secrets for a provider you are skipping. The app identity already has Key Vault Secrets User. Do not grant that role to a CD identity.
+3. Set `AUTH_CONFIGURED` to `true`. Set `AUTH_GOOGLE_CONFIGURED` and `AUTH_MICROSOFT_CONFIGURED` to `true` only for the providers whose secrets you wrote.
+4. Deploy again. The revision references those secrets and sets `AUTH_URL` to `https://<container-app-fqdn>`. A referenced secret that does not exist fails this revision.
+
+For a manual deploy, export the same variables in the shell you use for `az deployment group create`. `infra/main.<environment>.bicepparam` and `infra/cd.<environment>.bicepparam` both read them.
 
 ### Environment variables
 
-| Variable                         | Local                      | Azure                                                    |
-| -------------------------------- | -------------------------- | -------------------------------------------------------- |
-| `DATABASE_URL`                   | `.env`                     | Key Vault `database-url`, already created by Bicep       |
-| `AUTH_SECRET`                    | `.env`, a local value only | Key Vault `auth-secret`                                  |
-| `AUTH_TRUST_HOST`                | `true` in `.env`           | Set in the app (`trustHost: true`). No Key Vault secret. |
-| `AUTH_GOOGLE_ID`                 | `.env`, or empty           | Key Vault `auth-google-id`                               |
-| `AUTH_GOOGLE_SECRET`             | `.env`, or empty           | Key Vault `auth-google-secret`                           |
-| `AUTH_MICROSOFT_ENTRA_ID_ID`     | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-id`                   |
-| `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-secret`               |
-| `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | `.env`, or empty           | Key Vault `auth-microsoft-entra-id-issuer`               |
-| `AUTH_TEST_LOGIN`                | Playwright sets `true`     | Do not set it. `NODE_ENV=production` ignores it anyway.  |
+| Variable                         | Local                            | Azure                                                                       |
+| -------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | `.env`                           | Key Vault `database-url`, already created by Bicep                          |
+| `AUTH_SECRET`                    | `.env`, a local value only       | Key Vault `auth-secret`                                                     |
+| `AUTH_URL`                       | Optional. Local dev can omit it. | `https://<container-app-fqdn>`, set by Bicep when auth is on. Not a secret. |
+| `AUTH_TRUST_HOST`                | `true` in `.env`                 | Set in the app (`trustHost: true`). No Key Vault secret.                    |
+| `AUTH_GOOGLE_ID`                 | `.env`, or empty                 | Key Vault `auth-google-id`                                                  |
+| `AUTH_GOOGLE_SECRET`             | `.env`, or empty                 | Key Vault `auth-google-secret`                                              |
+| `AUTH_MICROSOFT_ENTRA_ID_ID`     | `.env`, or empty                 | Key Vault `auth-microsoft-entra-id-id`                                      |
+| `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `.env`, or empty                 | Key Vault `auth-microsoft-entra-id-secret`                                  |
+| `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | `.env`, or empty                 | Key Vault `auth-microsoft-entra-id-issuer`                                  |
+| `AUTH_TEST_LOGIN`                | Playwright sets `true`           | Do not set it. `NODE_ENV=production` ignores it anyway.                     |
 
 Use a different `AUTH_SECRET` in the staging vault and the prod vault. The Google client and the Entra app can be the same registration for both environments when both redirect URIs are on that app. Generate the secret with `openssl rand -base64 32`. Do not commit the output.
 
-A running revision keeps the secret values it resolved when it started. After you change a secret, the next deploy starts a revision that reads the new version.
+Versionless Key Vault references pick up a new secret version on their own. Container Apps checks within 30 minutes and restarts the revision. You do not have to deploy again only to rotate a secret. [Manage secrets in Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets) describes that refresh.
 
 ### Redirect URIs
 
@@ -321,9 +339,8 @@ If the hostname does not exist yet, register localhost first, deploy the platfor
 
 In the Microsoft Entra admin center, create an app registration named WanderVibe.
 
-1. Choose who can sign in, and set the issuer to match.
-   - This directory only: `https://login.microsoftonline.com/<tenant-id>/v2.0`
-   - Work and school accounts plus personal Microsoft accounts: `https://login.microsoftonline.com/common/v2.0`
+1. Choose who can sign in, and set the issuer to match. Do not use the `common` issuer. It accepts both work accounts and personal Microsoft accounts, and Entra does not verify work or school email addresses. This app does not link accounts that share an email, so a second provider becomes a second user, but `common` still widens who can attempt sign-in.
+   - This directory only, which is the usual choice: `https://login.microsoftonline.com/<tenant-id>/v2.0`
    - Personal Microsoft accounts only: `https://login.microsoftonline.com/consumers/v2.0`
 2. Add a **Web** redirect URI for each row in the table above. Do not use a SPA or mobile platform. Auth.js is a confidential server client.
 3. Create a client secret and copy the **Value** once. That is `AUTH_MICROSOFT_ENTRA_ID_SECRET`. The secret expires. Write a new Key Vault version before it expires, then deploy so the revision picks it up.
@@ -343,11 +360,17 @@ In Google Cloud Console, configure the OAuth consent screen, then create an OAut
 
 Grant your user Key Vault Secrets Officer on the vault for this step, on your user, not on a CD identity. Remove the assignment when the secrets exist. A Privileged Identity Management eligible assignment is the same idea when the tenant has it. [docs/infra.md](infra.md) explains why that role can also read the database password.
 
+`auth-secret` is always required once auth is on. Add the Google pair, the Entra trio, or both. Skip the commands for a provider you are not turning on.
+
 ```bash
 vault="<keyVaultName>"
 az keyvault secret set --vault-name "$vault" --name auth-secret --value "$(openssl rand -base64 32)"
+
+# Google, when AUTH_GOOGLE_CONFIGURED=true
 az keyvault secret set --vault-name "$vault" --name auth-google-id --value "<google client id>"
 az keyvault secret set --vault-name "$vault" --name auth-google-secret --value "<google client secret>"
+
+# Entra, when AUTH_MICROSOFT_CONFIGURED=true
 az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --value "<application client id>"
 az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --value "<client secret value>"
 az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --value "https://login.microsoftonline.com/<tenant-id>/v2.0"
@@ -355,7 +378,7 @@ az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issu
 
 Repeat for the other environment's vault with a new `auth-secret`. The shell history will contain the values. Close that shell when you are done. Do not put the values in a parameter file, a GitHub variable, or a GitHub secret.
 
-Then deploy. From an address on the allowlist, open `https://<fqdn>/signin` and complete Microsoft or Google. An unsigned request to `/` redirects to `/signin`. An unsigned request to any other API returns 401. `https://<fqdn>/api/health` and `https://<fqdn>/api/ready` return 200 with no session.
+After that deploy, from an address on the allowlist, open `https://<fqdn>/signin` and complete Microsoft or Google. An unsigned request to `/` redirects to `/signin`. An unsigned request to any other API returns 401. `https://<fqdn>/api/health` and `https://<fqdn>/api/ready` return 200 with no session. Before the flag is true, `/` is the plain "not configured" page instead of the sign-in form.
 
 ### Opening ingress
 

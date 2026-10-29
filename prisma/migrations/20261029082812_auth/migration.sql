@@ -1,9 +1,7 @@
-/*
-  Warnings:
+-- No Azure environment has this app yet, so Trip has no deployed rows.
+-- Drop any local rows so the required ownerId column can be added.
+DELETE FROM "Trip";
 
-  - Added the required column `ownerId` to the `Trip` table without a default value. This is not possible if the table is not empty.
-
-*/
 -- AlterTable
 ALTER TABLE "Trip" ADD COLUMN     "ownerId" TEXT NOT NULL;
 

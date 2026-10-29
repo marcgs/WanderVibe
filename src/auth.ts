@@ -14,14 +14,22 @@ const adapter = PrismaAdapter(
   prisma as unknown as Parameters<typeof PrismaAdapter>[0],
 );
 
+// 30 days, refreshed when the session is used and is at least a day old.
+export const sessionMaxAgeSeconds = 30 * 24 * 60 * 60;
+export const sessionUpdateAgeSeconds = 24 * 60 * 60;
+
 // Read at process start. Container Apps injects Key Vault values before the
 // process starts, and Next.js does not inline these server variables at build.
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter,
-  session: { strategy: "database" },
+  session: {
+    strategy: "database",
+    maxAge: sessionMaxAgeSeconds,
+    updateAge: sessionUpdateAgeSeconds,
+  },
   // Container Apps terminates TLS. The app trusts that host. See ADR-0004.
   trustHost: true,
-  pages: { signIn: "/signin" },
+  pages: { signIn: "/signin", error: "/signin" },
   providers: configuredProviders(),
   callbacks: {
     session({ session, user }) {

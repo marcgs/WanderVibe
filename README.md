@@ -129,7 +129,7 @@ az deployment group create \
 
 Then `az acr build` (or `az acr login` and `docker push`) and deploy again with `containerImageTag` set to that tag. Use `rg-wandervibe-prod` and `infra/main.prod.bicepparam` for production. Do not commit the database password. `az acr login` uses an Entra token. It works with the registry admin user disabled.
 
-Staging and production ingress still allow only IPv4 CIDRs supplied at deploy time. The parameter files commit no addresses and keep `restrictPublicAccess` true. An empty list answers 403 to every real client. Sign-in is enforced in the app, and `/api/health` and `/api/ready` stay anonymous. [docs/infra.md](docs/infra.md) and [docs/deploy.md](docs/deploy.md) cover the allowlist, the runner rule for the smoke test, and when to open ingress.
+Staging and production ingress still allow only IPv4 CIDRs supplied at deploy time. The parameter files commit no addresses and keep `restrictPublicAccess` true. An empty list answers 403 to every real client. Sign-in stays off until the GitHub Environment variable `AUTH_CONFIGURED` is `true`, so a deploy before the provider secrets exist still starts. `/api/health` and `/api/ready` stay anonymous. [docs/infra.md](docs/infra.md) and [docs/deploy.md](docs/deploy.md) cover the allowlist, the runner rule, and how to turn auth on.
 
 ## Stack
 

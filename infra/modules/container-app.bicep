@@ -55,6 +55,14 @@ param keyVaultSecrets keyVaultSecret[]
 @description('Environment variables whose values are Key Vault secret references.')
 param secretEnvironmentVariables secretEnvironmentVariable[]
 
+type plainEnvironmentVariable = {
+  name: string
+  value: string
+}
+
+@description('Environment variables that are not secrets. AUTH_URL is set here when auth is on.')
+param plainEnvironmentVariables plainEnvironmentVariable[] = []
+
 // Startup and liveness stay on /api/health. A liveness failure restarts the replica,
 // so that probe must not depend on Postgres.
 var healthProbeHttp = {
@@ -110,6 +118,20 @@ var ipSecurityRestrictions = allowlistAccepted
   : closedAllowlistRule
 // ingress-ip-rules:end
 
+var secretEnvironment = [
+  for item in secretEnvironmentVariables: {
+    name: item.name
+    secretRef: item.secretRef
+  }
+]
+
+var plainEnvironment = [
+  for item in plainEnvironmentVariables: {
+    name: item.name
+    value: item.value
+  }
+]
+
 resource app 'Microsoft.App/containerApps@2026-01-01' = {
   name: name
   location: location
@@ -155,12 +177,7 @@ resource app 'Microsoft.App/containerApps@2026-01-01' = {
             cpu: json('0.25')
             memory: '0.5Gi'
           }
-          env: [
-            for item in secretEnvironmentVariables: {
-              name: item.name
-              secretRef: item.secretRef
-            }
-          ]
+          env: concat(secretEnvironment, plainEnvironment)
           probes: [
             {
               type: 'Startup'

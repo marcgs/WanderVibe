@@ -362,21 +362,41 @@ Grant your user Key Vault Secrets Officer on the vault for this step, on your us
 
 `auth-secret` is always required once auth is on. Add the Google pair, the Entra trio, or both. Skip the commands for a provider you are not turning on.
 
+Do not enable shell tracing (`set -x`) while you run this. `read -rs` does not echo the value, and the history records the prompt rather than the secret. `--output none` keeps the Azure CLI from printing it. Unset each variable before the next prompt.
+
 ```bash
 vault="<keyVaultName>"
-az keyvault secret set --vault-name "$vault" --name auth-secret --value "$(openssl rand -base64 32)"
+
+secret="$(openssl rand -base64 32)"
+az keyvault secret set --vault-name "$vault" --name auth-secret --value "$secret" --output none
+unset secret
 
 # Google, when AUTH_GOOGLE_CONFIGURED=true
-az keyvault secret set --vault-name "$vault" --name auth-google-id --value "<google client id>"
-az keyvault secret set --vault-name "$vault" --name auth-google-secret --value "<google client secret>"
+read -rsp "Google client id: " google_id
+printf '\n'
+az keyvault secret set --vault-name "$vault" --name auth-google-id --value "$google_id" --output none
+unset google_id
+read -rsp "Google client secret: " google_secret
+printf '\n'
+az keyvault secret set --vault-name "$vault" --name auth-google-secret --value "$google_secret" --output none
+unset google_secret
 
 # Entra, when AUTH_MICROSOFT_CONFIGURED=true
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --value "<application client id>"
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --value "<client secret value>"
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --value "https://login.microsoftonline.com/<tenant-id>/v2.0"
+read -rsp "Entra application id: " entra_id
+printf '\n'
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --value "$entra_id" --output none
+unset entra_id
+read -rsp "Entra client secret: " entra_secret
+printf '\n'
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --value "$entra_secret" --output none
+unset entra_secret
+read -rsp "Entra issuer URL: " entra_issuer
+printf '\n'
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --value "$entra_issuer" --output none
+unset entra_issuer
 ```
 
-Repeat for the other environment's vault with a new `auth-secret`. The shell history will contain the values. Close that shell when you are done. Do not put the values in a parameter file, a GitHub variable, or a GitHub secret.
+Repeat for the other environment's vault with a new `auth-secret`. Do not put the values in a parameter file, a GitHub variable, or a GitHub secret.
 
 After that deploy, from an address on the allowlist, open `https://<fqdn>/signin` and complete Microsoft or Google. An unsigned request to `/` redirects to `/signin`. An unsigned request to any other API returns 401. `https://<fqdn>/api/health` and `https://<fqdn>/api/ready` return 200 with no session. Before the flag is true, `/` is the plain "not configured" page instead of the sign-in form.
 

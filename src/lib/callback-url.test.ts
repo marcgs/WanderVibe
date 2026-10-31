@@ -13,3 +13,10 @@ test("only same-app paths are kept", () => {
   expect(safeCallbackUrl("javascript:")).toBe("/");
   expect(safeCallbackUrl("/javascript:alert(1)")).toBe("/");
 });
+
+test("encoded query parameters are kept as written", () => {
+  const callback = "/trips?x=%26y%3D1";
+  expect(safeCallbackUrl(callback)).toBe(callback);
+  expect(safeCallbackUrl(safeCallbackUrl(callback))).toBe(callback);
+  expect(safeCallbackUrl("/?ref=a%26b")).toBe("/?ref=a%26b");
+});

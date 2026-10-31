@@ -64,6 +64,11 @@ test("invalid trip input stays on the form and is not listed", async ({
   await expect(
     page.getByText("End date must be on or after the start date."),
   ).toBeVisible();
+  await expect(page.getByLabel("Trip name")).toHaveValue(name);
+  await expect(page.getByLabel("Destination")).toHaveValue("Porto");
+  await expect(page.getByLabel("Start date")).toHaveValue("2027-08-10");
+  await expect(page.getByLabel("End date")).toHaveValue("2027-08-01");
+  await expect(page.getByLabel("End date")).toBeFocused();
   await expect(
     page.getByRole("listitem").filter({ hasText: name }),
   ).toHaveCount(0);
@@ -74,9 +79,8 @@ test("a traveler with no trips sees a call to action", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "No trips yet" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Create your first trip" }),
-  ).toBeVisible();
+  await page.getByRole("link", { name: "Create your first trip" }).click();
+  await expect(page.getByLabel("Trip name")).toBeFocused();
   await expect(page.getByRole("heading", { name: "New trip" })).toBeVisible();
 });
 

@@ -42,7 +42,7 @@ test("the home page shows an empty state and the new trip form", () => {
   ).toBeInTheDocument();
   expect(
     screen.getByRole("link", { name: "Create your first trip" }),
-  ).toHaveAttribute("href", "#new-trip");
+  ).toHaveAttribute("href", "#title");
   expect(screen.getByRole("heading", { name: "New trip" })).toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: "Create trip" }),

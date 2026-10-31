@@ -18,7 +18,7 @@ export function TripList({ trips }: { trips: TripSummary[] }) {
           the dates are enough to begin.
         </p>
         <a
-          href="#new-trip"
+          href="#title"
           className="bg-accent mt-6 inline-flex rounded-full px-4 py-3 text-sm font-semibold text-white"
         >
           Create your first trip

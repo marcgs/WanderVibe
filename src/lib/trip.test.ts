@@ -42,8 +42,8 @@ beforeEach(() => {
   loggerError.mockReset();
 });
 
-test("listTripsForUser reads only that owner's trips and sorts them", async () => {
-  tripFindMany.mockResolvedValue([
+test("listTripsForUser queries that owner's trips in start-date order", async () => {
+  const rows = [
     {
       id: "later",
       title: "Rome",
@@ -60,7 +60,8 @@ test("listTripsForUser reads only that owner's trips and sorts them", async () =
       endDate: new Date("2027-06-03T00:00:00.000Z"),
       ownerId: "user-1",
     },
-  ]);
+  ];
+  tripFindMany.mockResolvedValue(rows);
 
   const trips = await listTripsForUser("user-1");
 
@@ -68,7 +69,7 @@ test("listTripsForUser reads only that owner's trips and sorts them", async () =
     where: { ownerId: "user-1" },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
   });
-  expect(trips.map((trip) => trip.id)).toEqual(["earlier", "later"]);
+  expect(trips.map((trip) => trip.id)).toEqual(["later", "earlier"]);
 });
 
 test("createTripForUser stores the signed-in user as owner and does not log the trip", async () => {

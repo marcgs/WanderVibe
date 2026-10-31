@@ -55,6 +55,13 @@ test("the form action rejects an end date before the start date", async () => {
   );
 
   expect(state.errors.endDate).toBe(tripFieldError.endBeforeStart);
+  expect(state).toMatchObject({
+    title: "Lisbon",
+    destination: "Portugal",
+    startDate: "2027-06-08",
+    endDate: "2027-06-01",
+    revision: 1,
+  });
   expect(createTripForUser).not.toHaveBeenCalled();
   expect(logRejectedTrip).toHaveBeenCalledOnce();
   const logged = JSON.stringify(logRejectedTrip.mock.calls);
@@ -103,5 +110,29 @@ test("the form action does not save when signed out", async () => {
   );
 
   expect(state.errors.form).toBe("Sign in to create a trip.");
+  expect(state.title).toBe("Lisbon");
+  expect(state.destination).toBe("Portugal");
+  expect(state.startDate).toBe("2027-06-01");
+  expect(state.endDate).toBe("2027-06-08");
   expect(createTripForUser).not.toHaveBeenCalled();
+});
+
+test("a failed save returns the submitted values", async () => {
+  createTripForUser.mockRejectedValue(new Error("db"));
+
+  const state = await createTripAction(
+    emptyTripFormState,
+    form({
+      title: "  Lisbon  ",
+      destination: "Portugal",
+      startDate: "2027-06-01",
+      endDate: "2027-06-08",
+    }),
+  );
+
+  expect(state.errors.form).toBe("The trip could not be saved. Try again.");
+  expect(state.title).toBe("  Lisbon  ");
+  expect(state.destination).toBe("Portugal");
+  expect(state.startDate).toBe("2027-06-01");
+  expect(state.endDate).toBe("2027-06-08");
 });

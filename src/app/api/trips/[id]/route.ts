@@ -53,5 +53,5 @@ export async function PATCH(
   const trip = await ownedTrip(user, id);
   if (!trip) return tripNotFound(id);
   logger.info({ tripId: trip.id }, "Trip change is not available");
-  return json({ error: "not_supported" }, 405, { allow: "GET" });
+  return json({ error: "not_supported" }, 405, { allow: "GET, HEAD" });
 }

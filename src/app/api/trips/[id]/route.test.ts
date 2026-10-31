@@ -164,7 +164,7 @@ test("the owner cannot change a trip from this story", async () => {
   );
 
   expect(response.status).toBe(405);
-  expect(response.headers.get("allow")).toBe("GET");
+  expect(response.headers.get("allow")).toBe("GET, HEAD");
   await expect(response.json()).resolves.toEqual({ error: "not_supported" });
   expect(tripUpdate).not.toHaveBeenCalled();
 });

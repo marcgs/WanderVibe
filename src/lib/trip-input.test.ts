@@ -71,6 +71,55 @@ test("dates must be real calendar days", () => {
   });
 });
 
+test("dates must fall between 1900 and 2100", () => {
+  expect(
+    parseTripInput({
+      ...valid,
+      startDate: "1899-12-31",
+      endDate: "2101-01-01",
+    }),
+  ).toEqual({
+    ok: false,
+    errors: {
+      startDate: tripFieldError.startOutOfRange,
+      endDate: tripFieldError.endOutOfRange,
+    },
+  });
+  expect(
+    parseTripInput({
+      ...valid,
+      startDate: "1900-01-01",
+      endDate: "2100-12-31",
+    }).ok,
+  ).toBe(true);
+  expect(
+    parseTripInput({
+      ...valid,
+      startDate: "1900-02-29",
+      endDate: "1900-03-01",
+    }),
+  ).toEqual({
+    ok: false,
+    errors: { startDate: tripFieldError.startInvalid },
+  });
+});
+
+test("control characters and bidi overrides are rejected", () => {
+  expect(parseTripInput({ ...valid, title: "Lisbon\u0000" })).toEqual({
+    ok: false,
+    errors: { title: tripFieldError.titleControls },
+  });
+  expect(parseTripInput({ ...valid, destination: "Kyoto\u202E" })).toEqual({
+    ok: false,
+    errors: { destination: tripFieldError.destinationControls },
+  });
+  expect(parseTripInput({ ...valid, title: "Lisbon\nweek" })).toEqual({
+    ok: false,
+    errors: { title: tripFieldError.titleControls },
+  });
+  expect(parseTripInput({ ...valid, destination: "São Paulo" }).ok).toBe(true);
+});
+
 test("names and destinations have a maximum length", () => {
   const parsed = parseTripInput({
     ...valid,

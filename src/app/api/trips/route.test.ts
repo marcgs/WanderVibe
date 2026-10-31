@@ -77,19 +77,19 @@ test("listing trips returns only the signed-in user's trips, earliest first", as
   requireApiUser.mockResolvedValue(user);
   tripFindMany.mockResolvedValue([
     {
-      id: "later",
-      title: "Rome",
-      destination: "Italy",
-      startDate: new Date("2027-08-01T00:00:00.000Z"),
-      endDate: new Date("2027-08-04T00:00:00.000Z"),
-      ownerId: "user-1",
-    },
-    {
       id: "earlier",
       title: "Lisbon",
       destination: "Portugal",
       startDate: new Date("2027-06-01T00:00:00.000Z"),
       endDate: new Date("2027-06-03T00:00:00.000Z"),
+      ownerId: "user-1",
+    },
+    {
+      id: "later",
+      title: "Rome",
+      destination: "Italy",
+      startDate: new Date("2027-08-01T00:00:00.000Z"),
+      endDate: new Date("2027-08-04T00:00:00.000Z"),
       ownerId: "user-1",
     },
   ]);
@@ -208,6 +208,80 @@ test("a valid trip is stored for the signed-in user", async () => {
   const logged = JSON.stringify(loggerInfo.mock.calls);
   expect(logged).not.toContain(title);
   expect(logged).not.toContain(destination);
+});
+
+test("creating a trip requires a JSON content type", async () => {
+  requireApiUser.mockResolvedValue(user);
+
+  const response = await POST(
+    new Request("http://localhost/api/trips", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({
+        title,
+        destination,
+        startDate: "2027-06-01",
+        endDate: "2027-06-08",
+      }),
+    }),
+  );
+
+  expect(response.status).toBe(415);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  await expect(response.json()).resolves.toEqual({
+    error: "unsupported_media_type",
+  });
+  expect(tripCreate).not.toHaveBeenCalled();
+  expect(JSON.stringify(loggerInfo.mock.calls)).not.toContain(title);
+});
+
+test("a JSON content type may include a charset", async () => {
+  requireApiUser.mockResolvedValue(user);
+  tripCreate.mockResolvedValue({
+    id: "trip-1",
+    title,
+    destination,
+    startDate: new Date("2027-06-01T00:00:00.000Z"),
+    endDate: new Date("2027-06-08T00:00:00.000Z"),
+    ownerId: "user-1",
+  });
+
+  const response = await POST(
+    new Request("http://localhost/api/trips", {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        title,
+        destination,
+        startDate: "2027-06-01",
+        endDate: "2027-06-08",
+      }),
+    }),
+  );
+
+  expect(response.status).toBe(201);
+  expect(tripCreate).toHaveBeenCalledOnce();
+});
+
+test("a NUL in the trip name is rejected before it is stored", async () => {
+  requireApiUser.mockResolvedValue(user);
+
+  const response = await POST(
+    post({
+      title: `${title}\u0000`,
+      destination,
+      startDate: "2027-06-01",
+      endDate: "2027-06-08",
+    }),
+  );
+
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    error: "invalid",
+    fields: { title: tripFieldError.titleControls },
+  });
+  expect(tripCreate).not.toHaveBeenCalled();
+  expect(JSON.stringify(loggerInfo.mock.calls)).not.toContain(title);
 });
 
 test("a body that is not JSON is rejected", async () => {

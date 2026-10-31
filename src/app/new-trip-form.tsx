@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import {
   emptyTripFormState,
   type TripField,
@@ -25,8 +25,15 @@ export function NewTripForm({ action }: { action: TripAction }) {
     emptyTripFormState,
   );
 
+  useEffect(() => {
+    const firstInvalid = fields.find((field) => state.errors[field.id]);
+    if (!firstInvalid) return;
+    document.getElementById(firstInvalid.id)?.focus();
+  }, [state]);
+
   return (
     <form
+      key={state.revision}
       action={formAction}
       noValidate
       className="flex min-w-0 flex-col gap-4"
@@ -36,6 +43,7 @@ export function NewTripForm({ action }: { action: TripAction }) {
           <Field
             key={field.id}
             field={field}
+            value={state[field.id]}
             error={state.errors[field.id]}
             wide={field.id === "title" || field.id === "destination"}
           />
@@ -59,10 +67,12 @@ export function NewTripForm({ action }: { action: TripAction }) {
 
 function Field({
   field,
+  value,
   error,
   wide,
 }: {
   field: (typeof fields)[number];
+  value: string;
   error: TripFormState["errors"][TripField];
   wide: boolean;
 }) {
@@ -76,6 +86,7 @@ function Field({
         id={field.id}
         name={field.id}
         type={field.type}
+        defaultValue={value}
         autoComplete="off"
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? errorId : undefined}

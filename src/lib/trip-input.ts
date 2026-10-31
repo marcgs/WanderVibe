@@ -1,15 +1,21 @@
 export const tripTitleMaxLength = 120;
 export const tripDestinationMaxLength = 160;
+export const tripYearMin = 1900;
+export const tripYearMax = 2100;
 
 export const tripFieldError = {
   titleRequired: "Enter a trip name.",
   titleTooLong: `Trip name must be ${tripTitleMaxLength} characters or fewer.`,
+  titleControls: "Trip name can't include control characters.",
   destinationRequired: "Enter a destination.",
   destinationTooLong: `Destination must be ${tripDestinationMaxLength} characters or fewer.`,
+  destinationControls: "Destination can't include control characters.",
   startRequired: "Enter a start date.",
   startInvalid: "Enter a valid start date.",
+  startOutOfRange: `Enter a start date between ${tripYearMin} and ${tripYearMax}.`,
   endRequired: "Enter an end date.",
   endInvalid: "Enter a valid end date.",
+  endOutOfRange: `Enter an end date between ${tripYearMin} and ${tripYearMax}.`,
   endBeforeStart: "End date must be on or after the start date.",
 } as const;
 
@@ -26,13 +32,30 @@ export type TripInput = {
 
 export type TripFormState = {
   ok: boolean;
+  revision: number;
   errors: TripFieldErrors;
+  title: string;
+  destination: string;
+  startDate: string;
+  endDate: string;
 };
 
 export const emptyTripFormState: TripFormState = {
   ok: false,
+  revision: 0,
   errors: {},
+  title: "",
+  destination: "",
+  startDate: "",
+  endDate: "",
 };
+
+// C0/C1 controls (including NUL) and bidi embeddings, overrides, and isolates.
+const disallowedText = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/;
+
+function hasDisallowedText(value: string): boolean {
+  return disallowedText.test(value);
+}
 
 export type TripJson = {
   id: string;
@@ -65,7 +88,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseDateField(value: unknown): Date | "missing" | "invalid" {
+function parseDateField(
+  value: unknown,
+): Date | "missing" | "invalid" | "out_of_range" {
   if (typeof value !== "string") {
     return value == null ? "missing" : "invalid";
   }
@@ -76,6 +101,7 @@ function parseDateField(value: unknown): Date | "missing" | "invalid" {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  if (year < tripYearMin || year > tripYearMax) return "out_of_range";
   const date = new Date(Date.UTC(year, month - 1, day));
   if (
     date.getUTCFullYear() !== year ||
@@ -96,14 +122,18 @@ export function parseTripInput(
 
   const title = typeof record.title === "string" ? record.title.trim() : "";
   if (!title) errors.title = tripFieldError.titleRequired;
-  else if ([...title].length > tripTitleMaxLength) {
+  else if (hasDisallowedText(title)) {
+    errors.title = tripFieldError.titleControls;
+  } else if ([...title].length > tripTitleMaxLength) {
     errors.title = tripFieldError.titleTooLong;
   }
 
   const destination =
     typeof record.destination === "string" ? record.destination.trim() : "";
   if (!destination) errors.destination = tripFieldError.destinationRequired;
-  else if ([...destination].length > tripDestinationMaxLength) {
+  else if (hasDisallowedText(destination)) {
+    errors.destination = tripFieldError.destinationControls;
+  } else if ([...destination].length > tripDestinationMaxLength) {
     errors.destination = tripFieldError.destinationTooLong;
   }
 
@@ -111,12 +141,16 @@ export function parseTripInput(
   if (startDate === "missing") errors.startDate = tripFieldError.startRequired;
   else if (startDate === "invalid") {
     errors.startDate = tripFieldError.startInvalid;
+  } else if (startDate === "out_of_range") {
+    errors.startDate = tripFieldError.startOutOfRange;
   }
 
   const endDate = parseDateField(record.endDate);
   if (endDate === "missing") errors.endDate = tripFieldError.endRequired;
   else if (endDate === "invalid") errors.endDate = tripFieldError.endInvalid;
-  else if (
+  else if (endDate === "out_of_range") {
+    errors.endDate = tripFieldError.endOutOfRange;
+  } else if (
     startDate instanceof Date &&
     endDate.getTime() < startDate.getTime()
   ) {

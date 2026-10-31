@@ -70,4 +70,5 @@ model Trip {
   updatedAt   DateTime @updatedAt
 
   @@index([ownerId])
+  @@index([ownerId, startDate])
 }

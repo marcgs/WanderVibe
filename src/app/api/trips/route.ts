@@ -13,6 +13,14 @@ function json(body: unknown, status: number) {
   return Response.json(body, { status, headers: noStore });
 }
 
+// The home page saves through a server action. This route is the JSON API.
+function isJsonRequest(request: Request): boolean {
+  const header = request.headers.get("content-type");
+  if (!header) return false;
+  const mediaType = header.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mediaType === "application/json";
+}
+
 export async function GET() {
   await connection();
   const user = await requireApiUser();
@@ -26,6 +34,10 @@ export async function POST(request: Request) {
   await connection();
   const user = await requireApiUser();
   if (user instanceof Response) return user;
+
+  if (!isJsonRequest(request)) {
+    return json({ error: "unsupported_media_type" }, 415);
+  }
 
   let body: unknown;
   try {

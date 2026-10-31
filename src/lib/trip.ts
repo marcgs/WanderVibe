@@ -1,10 +1,6 @@
 import { logger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import {
-  compareTripsByStartDate,
-  type TripFieldErrors,
-  type TripInput,
-} from "@/lib/trip-input";
+import type { TripFieldErrors, TripInput } from "@/lib/trip-input";
 
 function errorCode(error: unknown): string {
   if (
@@ -23,12 +19,11 @@ export function logRejectedTrip(errors: TripFieldErrors): void {
   logger.info({ fields: Object.keys(errors).sort() }, "Trip create rejected");
 }
 
-export async function listTripsForUser(ownerId: string) {
-  const trips = await prisma.trip.findMany({
+export function listTripsForUser(ownerId: string) {
+  return prisma.trip.findMany({
     where: { ownerId },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
   });
-  return [...trips].sort(compareTripsByStartDate);
 }
 
 // Logs the trip id only. The name and destination stay out of the log.

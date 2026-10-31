@@ -10,7 +10,7 @@
 #   docker build -t wandervibe .
 #   docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://... wandervibe
 
-FROM node:22.23.4-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS base
+FROM node:26.12.1-bookworm-slim@sha256:88e480776c6149ff1d098cd304f44bf18057fb5d284a3329b78162d29821e28c AS base
 
 FROM base AS deps
 

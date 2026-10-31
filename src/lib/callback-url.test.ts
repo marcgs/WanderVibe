@@ -20,3 +20,9 @@ test("encoded query parameters are kept as written", () => {
   expect(safeCallbackUrl(safeCallbackUrl(callback))).toBe(callback);
   expect(safeCallbackUrl("/?ref=a%26b")).toBe("/?ref=a%26b");
 });
+
+test("dot segments cannot escape the app", () => {
+  expect(safeCallbackUrl("/.//evil.com")).toBe("/");
+  expect(safeCallbackUrl("/%2e%2e/%2fevil.com")).toBe("/");
+  expect(safeCallbackUrl("/.%2e/%2fevil.com")).toBe("/");
+});

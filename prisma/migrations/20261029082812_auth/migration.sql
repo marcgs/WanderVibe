@@ -1,6 +1,11 @@
 -- No Azure environment has this app yet, so Trip has no deployed rows.
--- Drop any local rows so the required ownerId column can be added.
-DELETE FROM "Trip";
+-- A required ownerId cannot be added if a local database already stored trips.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "Trip") THEN
+    RAISE EXCEPTION 'Trip already has rows, so ownerId cannot be added without an owner';
+  END IF;
+END $$;
 
 -- AlterTable
 ALTER TABLE "Trip" ADD COLUMN     "ownerId" TEXT NOT NULL;

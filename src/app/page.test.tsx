@@ -56,6 +56,10 @@ test("the trip list shows name, destination, and date range in order", () => {
   expect(
     within(items[0]!).getByRole("heading", { name: "Summer in Lisbon" }),
   ).toBeInTheDocument();
+  expect(within(items[0]!).getByRole("link")).toHaveAttribute(
+    "href",
+    "/trips/earlier",
+  );
   expect(within(items[0]!).getByText("Lisbon")).toBeInTheDocument();
   expect(
     within(items[0]!).getByText("1 Jun 2027 – 8 Jun 2027"),

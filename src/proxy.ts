@@ -20,7 +20,6 @@ import {
 } from "@/lib/request-id";
 import {
   KUBE_PROBE_USER_AGENT,
-  notePlatformProbe,
   PLATFORM_PROBE_ATTRIBUTE,
 } from "@/lib/span-export";
 
@@ -90,14 +89,12 @@ function nextWithRequestHeaders(request: {
   const headers = new Headers(request.headers);
   headers.set("x-request-id", requestIdFrom(request.headers));
   // A client can send wandervibe.platform_probe. Never forward it. The probe
-  // mark is only the trace id recorded below, after this process sees kube-probe.
+  // mark is an attribute on this span. The processor reads it when the span ends.
   const baggage = withoutPlatformBaggage(headers.get("baggage"));
   if (baggage) headers.set("baggage", baggage);
   else headers.delete("baggage");
   if (isPlatformProbeRequest(request)) {
-    const active = trace.getActiveSpan();
-    active?.setAttribute(PLATFORM_PROBE_ATTRIBUTE, "1");
-    notePlatformProbe(active?.spanContext().traceId);
+    trace.getActiveSpan()?.setAttribute(PLATFORM_PROBE_ATTRIBUTE, "1");
   }
   return NextResponse.next({ request: { headers } });
 }

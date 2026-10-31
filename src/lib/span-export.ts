@@ -33,26 +33,6 @@ export const PLATFORM_PROBE_ATTRIBUTE = "wandervibe.platform_probe";
 
 const MAX_PLATFORM_TRACES = 32;
 const MAX_HELD_SPANS = 24;
-const TRACE_ID = /^[0-9a-f]{32}$/i;
-
-// Trace ids the proxy recorded after seeing a kube-probe User-Agent.
-// Render spans do not carry that header, but they continue this trace.
-// Client baggage cannot add an entry.
-const notedPlatformProbes = new Set<string>();
-
-export function notePlatformProbe(traceId: string | undefined): void {
-  if (!traceId || !TRACE_ID.test(traceId) || /^0+$/.test(traceId)) return;
-  if (notedPlatformProbes.has(traceId)) return;
-  if (notedPlatformProbes.size >= MAX_PLATFORM_TRACES) {
-    const oldest = notedPlatformProbes.keys().next().value;
-    if (oldest !== undefined) notedPlatformProbes.delete(oldest);
-  }
-  notedPlatformProbes.add(traceId);
-}
-
-export function clearNotedPlatformProbes(): void {
-  notedPlatformProbes.clear();
-}
 
 type HeldSpan = {
   span: ExportSpan;
@@ -112,8 +92,7 @@ export function activeSpanIsPlatformProbe(): boolean {
       }
     | undefined;
   if (!active) return false;
-  if (active.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") return true;
-  return notedPlatformProbes.has(active.spanContext().traceId);
+  return active.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1";
 }
 
 function statusCode(span: ExportSpan): number | undefined {
@@ -149,9 +128,17 @@ function spanUserAgent(span: ExportSpan): string | undefined {
   return undefined;
 }
 
+// The request span is the one Next names BaseServer.handleRequest, which also
+// receives http.status_code when it ends. A child such as
+// "executing api route (app) /api/ready" has next.route and must not close
+// the trace: that was dropping SELECT 1 on a failed probe.
+function isRequestSpan(span: ExportSpan): boolean {
+  const attributes = span.attributes ?? {};
+  if (attributes["next.span_type"] === "BaseServer.handleRequest") return true;
+  return statusCode(span) !== undefined;
+}
+
 function marksPlatformProbe(span: ExportSpan): boolean {
-  const traceId = span.spanContext?.()?.traceId;
-  if (traceId && notedPlatformProbes.has(traceId)) return true;
   if (span.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") return true;
   const userAgent = spanUserAgent(span);
   return Boolean(
@@ -210,24 +197,30 @@ export function createExportSpanProcessor(): {
         unsample(span);
         return;
       }
-      // The middleware pass ends 200 before the route handler runs.
+      const spanContext = span.spanContext?.();
+      if (!spanContext) return;
+      // The proxy sets this on its own span, which ends before the route.
+      // Remember here, in this processor. The built server bundles the proxy
+      // and this file apart, so a Set written from the proxy is never seen.
       if (span.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") {
+        remember(spanContext.traceId);
         unsample(span);
         return;
       }
-      const spanContext = span.spanContext?.();
-      if (!spanContext) return;
       const trace = probeTraces.get(spanContext.traceId);
       if (!trace) return;
-      const path = probePath(span);
-      if (!path) {
+      if (!isRequestSpan(span)) {
         hold(trace, span);
         return;
       }
-      // The request span ends last. Drop the id on both outcomes so a down
-      // database cannot grow the set by one failed probe at a time.
+      // The request span ends the trace either way, so a down database cannot
+      // grow the set and a reused traceparent cannot hide a later request.
       probeTraces.delete(spanContext.traceId);
-      notedPlatformProbes.delete(spanContext.traceId);
+      const path = probePath(span);
+      if (!path) {
+        release(trace);
+        return;
+      }
       if (isProbeFailure(span)) {
         release(trace);
         return;

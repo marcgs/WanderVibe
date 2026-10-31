@@ -1,9 +1,7 @@
-import { beforeEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { propagation, ROOT_CONTEXT, TraceFlags } from "@opentelemetry/api";
 import {
-  clearNotedPlatformProbes,
   createExportSpanProcessor,
-  notePlatformProbe,
   PLATFORM_PROBE_ATTRIBUTE,
   setPlatformProbeReleaser,
   type ExportSpan,
@@ -34,9 +32,23 @@ function span(options: {
   };
 }
 
-beforeEach(() => {
-  clearNotedPlatformProbes();
-});
+function rememberProbe(
+  processor: { onEnd(span: ExportSpan): void },
+  traceId: string,
+) {
+  const middleware = span({
+    name: "GET",
+    traceId,
+    httpStatus: 200,
+    attributes: {
+      "http.target": "/api/ready",
+      "next.span_type": "BaseServer.handleRequest",
+      [PLATFORM_PROBE_ATTRIBUTE]: "1",
+    },
+  });
+  processor.onEnd(middleware);
+  return middleware;
+}
 
 function spoofedBaggage() {
   const baggage = propagation.createBaggage({
@@ -84,7 +96,8 @@ test("a successful platform probe drops the request, SELECT 1, and early spans",
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
   const traceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  notePlatformProbe(traceId);
+  const middleware = rememberProbe(processor, traceId);
+  expect(sampled(middleware)).toBe(false);
   const prepare = span({ name: "prepare route module", traceId });
   const startResponse = span({ name: "start response", traceId });
   const query = span({
@@ -120,8 +133,16 @@ test("a failed platform probe keeps the request and releases SELECT 1", () => {
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
   const traceId = "cccccccccccccccccccccccccccccccc";
-  notePlatformProbe(traceId);
+  rememberProbe(processor, traceId);
   const prepare = span({ name: "prepare route module", traceId });
+  const routeChild = span({
+    name: "executing api route (app) /api/ready",
+    traceId,
+    attributes: {
+      "next.route": "/api/ready",
+      "next.span_type": "AppRouteRouteHandlers.runHandler",
+    },
+  });
   const query = span({
     name: "pg.query:SELECT wandervibe",
     traceId,
@@ -136,15 +157,17 @@ test("a failed platform probe keeps the request and releases SELECT 1", () => {
 
   processor.onStart(prepare);
   processor.onEnd(prepare);
+  processor.onEnd(routeChild);
   processor.onStart(query);
   processor.onEnd(query);
   processor.onStart(ready);
   processor.onEnd(ready);
 
   expect(sampled(ready)).toBe(true);
-  expect(released).toHaveLength(2);
+  expect(released).toHaveLength(3);
   expect(released[0]).toBe(prepare);
-  expect(released[1]).toBe(query);
+  expect(released[1]).toBe(routeChild);
+  expect(released[2]).toBe(query);
   expect(prepare.flags.traceFlags & TraceFlags.SAMPLED).toBe(
     TraceFlags.SAMPLED,
   );
@@ -181,7 +204,7 @@ test("the middleware probe span is dropped and does not close the trace", () => 
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
   const traceId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-  notePlatformProbe(traceId);
+  rememberProbe(processor, traceId);
   const middleware = span({
     name: "GET",
     traceId,
@@ -237,10 +260,7 @@ test("platform probe traces stay bounded when the request span never ends", () =
     (index + 1).toString(16).padStart(32, "0"),
   );
 
-  for (const traceId of ids) notePlatformProbe(traceId);
-  for (const traceId of ids) {
-    processor.onStart(span({ name: "GET /api/ready", traceId }));
-  }
+  for (const traceId of ids) rememberProbe(processor, traceId);
 
   const evicted = span({ name: "start response", traceId: ids[0] });
   const kept = span({ name: "start response", traceId: ids[32] });
@@ -283,7 +303,7 @@ test("spoofed platform-probe baggage cannot fill the probe set", () => {
   const processor = createExportSpanProcessor();
   const parent = spoofedBaggage();
   const realId = "abababababababababababababababab";
-  notePlatformProbe(realId);
+  rememberProbe(processor, realId);
 
   for (let index = 0; index < 40; index += 1) {
     const traceId = (index + 1).toString(16).padStart(32, "b");
@@ -306,4 +326,37 @@ test("spoofed platform-probe baggage cannot fill the probe set", () => {
   processor.onStart(child, parent);
   processor.onEnd(child);
   expect(sampled(child)).toBe(false);
+});
+
+test("a non-probe request reusing a probe trace is exported", () => {
+  const released: ExportSpan[] = [];
+  setPlatformProbeReleaser((item) => released.push(item));
+  const processor = createExportSpanProcessor();
+  const traceId = "16161616161616161616161616161616";
+  rememberProbe(processor, traceId);
+  const child = span({ name: "prepare route module", traceId });
+  processor.onEnd(child);
+  const signin = span({
+    name: "GET /signin",
+    traceId,
+    httpStatus: 200,
+    attributes: {
+      "http.target": "/signin",
+      "next.span_type": "BaseServer.handleRequest",
+    },
+  });
+  processor.onEnd(signin);
+
+  expect(sampled(signin)).toBe(true);
+  expect(released).toContain(child);
+  expect(sampled(child)).toBe(true);
+
+  const later = span({
+    name: "GET /signin",
+    traceId,
+    httpStatus: 200,
+    attributes: { "http.target": "/signin" },
+  });
+  processor.onEnd(later);
+  expect(sampled(later)).toBe(true);
 });

@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import { acceptRequestId, requestIdFrom, runWithRequestId } from "./request-id";
+import {
+  acceptRequestId,
+  requestIdFrom,
+  runWithForwardedHeaders,
+  runWithRequestId,
+} from "./request-id";
 
 test("request ids accept a uuid or a trace id and ignore secrets", () => {
   const uuid = "11111111-1111-4111-8111-111111111111";
@@ -41,4 +46,36 @@ test("logs in one request share an id when telemetry is off", () => {
     "11111111-1111-4111-8111-111111111111",
     "11111111-1111-4111-8111-111111111111",
   ]);
+});
+
+test("a route uses the forwarded x-request-id for every log line", () => {
+  const requestId = "22222222-2222-4222-8222-222222222222";
+  const store = {
+    type: "request",
+    headers: {
+      get(name: string) {
+        return name === "x-request-id" ? requestId : null;
+      },
+    },
+  };
+  const seen: string[] = [];
+  runWithForwardedHeaders(store.headers, () => {
+    seen.push(requestIdFrom());
+    seen.push(requestIdFrom());
+  });
+
+  expect(seen).toEqual([requestId, requestId]);
+});
+
+test("a route without a request id shares one generated id", () => {
+  const seen: string[] = [];
+  runWithForwardedHeaders({ get: () => null }, () => {
+    seen.push(requestIdFrom());
+    seen.push(requestIdFrom());
+  });
+
+  expect(seen[0]).toBe(seen[1]);
+  expect(seen[0]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
 });

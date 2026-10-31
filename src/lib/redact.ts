@@ -47,7 +47,7 @@ const JWT =
 const USERINFO_URL =
   /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^@\s/]+@[^\s'"]+/gi;
 
-const MAX_SCRUB_LENGTH = 2048;
+export const MAX_SCRUB_LENGTH = 2048;
 
 type Assignment = {
   separator: number;
@@ -68,11 +68,17 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 export function scrubString(input: string): string {
-  const capped =
-    input.length > MAX_SCRUB_LENGTH
-      ? `${input.slice(0, MAX_SCRUB_LENGTH)}…[truncated]`
-      : input;
-  return redactDecoded(decodeRepeated(capped), 0);
+  if (input.length <= MAX_SCRUB_LENGTH) {
+    return redactDecoded(decodeRepeated(input), 0);
+  }
+  // Drop the partial token that crosses the cut, then mark the truncation.
+  const capped = input.slice(0, MAX_SCRUB_LENGTH).replace(/\S*$/, "");
+  return `${redactDecoded(decodeRepeated(capped), 0)}…[truncated]`;
+}
+
+// Tests call this so a 64 KB string still exercises the regexes.
+export function redactUncapped(input: string): string {
+  return redactDecoded(decodeRepeated(input), 0);
 }
 
 export function scrubValue(
@@ -284,6 +290,8 @@ function normalizeKey(key: string): string {
 function keyMatches(normalized: string): boolean {
   const parts = normalized.split("_").filter(Boolean);
   const flat = parts.join("");
+  // token_type is an OAuth metadata field, not a credential.
+  if (flat === "tokentype") return false;
   for (const name of SENSITIVE_NAMES) {
     if (QUERY_ONLY.has(name)) continue;
     const nameFlat = name.replace(/_/g, "");

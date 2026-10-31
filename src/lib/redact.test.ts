@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { redactExportedSpan, scrubString, scrubValue } from "./redact";
+import {
+  MAX_SCRUB_LENGTH,
+  redactExportedSpan,
+  redactUncapped,
+  scrubString,
+  scrubValue,
+} from "./redact";
 
 test("scrub keeps ordinary text and removes secrets from strings", () => {
   const password = "hunter2-password";
@@ -201,7 +207,17 @@ test("keeps error codes that are not query secrets", () => {
   );
 });
 
-test("long non-matching strings scrub quickly", () => {
+test("keeps token_type and still redacts token", () => {
+  expect(scrubString('token_type: "Bearer"')).toContain("Bearer");
+  expect(JSON.stringify(scrubValue({ token_type: "Bearer" }))).toContain(
+    "Bearer",
+  );
+  expect(scrubString("token=session-token-value")).not.toContain(
+    "session-token-value",
+  );
+});
+
+test("long non-matching strings scrub quickly without the length cap", () => {
   const inputs = [
     "a".repeat(65536),
     "a.".repeat(32768),
@@ -209,9 +225,29 @@ test("long non-matching strings scrub quickly", () => {
   ];
   for (const input of inputs) {
     const started = performance.now();
-    const scrubbed = scrubString(input);
+    const scrubbed = redactUncapped(input);
     expect(performance.now() - started, input.slice(0, 16)).toBeLessThan(50);
-    expect(scrubbed).toContain("…[truncated]");
-    expect(scrubbed.length).toBeLessThan(2100);
+    expect(scrubbed).toBe(input);
+  }
+});
+
+test("a secret that crosses the length cap is not partially kept", () => {
+  const secrets = [
+    "postgresql://wv:SuperSecretPassw0rd@db.example:5432/wandervibe",
+    "marc.gomez@example.com",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtYXJjIn0.signaturevalue",
+  ];
+  const padding = "b ".repeat(MAX_SCRUB_LENGTH);
+  for (const secret of secrets) {
+    for (let cut = 1; cut < secret.length; cut += 1) {
+      const input = `${padding.slice(0, MAX_SCRUB_LENGTH - cut)}${secret}`;
+      const scrubbed = scrubString(input);
+      expect(scrubbed, `${secret} cut ${cut}`).not.toContain("SuperSecret");
+      expect(scrubbed, `${secret} cut ${cut}`).not.toContain("marc.gomez");
+      expect(scrubbed, `${secret} cut ${cut}`).not.toContain("@example");
+      expect(scrubbed, `${secret} cut ${cut}`).not.toContain("eyJhbGci");
+      expect(scrubbed, `${secret} cut ${cut}`).not.toContain("signaturevalue");
+      expect(scrubbed, `${secret} cut ${cut}`).toContain("…[truncated]");
+    }
   }
 });

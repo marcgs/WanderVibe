@@ -48,9 +48,7 @@ test("marks only a kube-probe call to a probe path", async () => {
   expect(response.headers.get("x-middleware-request-user-agent")).toBe(
     "kube-probe/1.25",
   );
-  expect(response.headers.get("x-middleware-request-baggage")).toBe(
-    "wandervibe.platform_probe=1",
-  );
+  expect(response.headers.get("x-middleware-request-baggage")).toBeNull();
   expect(response.headers.get("x-middleware-override-headers")).toContain(
     "user-agent",
   );
@@ -66,4 +64,23 @@ test("marks only a kube-probe call to a probe path", async () => {
   });
   const pageResponse = await proxy(page, event());
   expect(pageResponse.headers.get("x-middleware-request-baggage")).toBeNull();
+});
+
+test("strips a client platform-probe baggage entry", async () => {
+  const request = new NextRequest("http://localhost/api/health", {
+    headers: {
+      "x-request-id": requestId,
+      "user-agent": "curl/8.5.0",
+      baggage: "wandervibe.platform_probe=1,user=marc",
+    },
+  });
+
+  const response = await proxy(request, event());
+
+  expect(response.headers.get("x-middleware-request-baggage")).toBe(
+    "user=marc",
+  );
+  expect(response.headers.get("x-middleware-request-x-request-id")).toBe(
+    requestId,
+  );
 });

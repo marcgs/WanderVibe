@@ -20,8 +20,8 @@ import {
 } from "@/lib/request-id";
 import {
   KUBE_PROBE_USER_AGENT,
+  notePlatformProbe,
   PLATFORM_PROBE_ATTRIBUTE,
-  PLATFORM_PROBE_BAGGAGE,
 } from "@/lib/span-export";
 
 // Auth.js types this wrapper as a route handler as well as proxy.
@@ -89,16 +89,36 @@ function nextWithRequestHeaders(request: {
 }): NextResponse {
   const headers = new Headers(request.headers);
   headers.set("x-request-id", requestIdFrom(request.headers));
+  // A client can send wandervibe.platform_probe. Never forward it. The probe
+  // mark is only the trace id recorded below, after this process sees kube-probe.
+  const baggage = withoutPlatformBaggage(headers.get("baggage"));
+  if (baggage) headers.set("baggage", baggage);
+  else headers.delete("baggage");
   if (isPlatformProbeRequest(request)) {
-    trace.getActiveSpan()?.setAttribute(PLATFORM_PROBE_ATTRIBUTE, "1");
-    const existing = headers.get("baggage");
-    const entry = `${PLATFORM_PROBE_BAGGAGE}=1`;
-    headers.set(
-      "baggage",
-      existing && existing.length > 0 ? `${existing},${entry}` : entry,
-    );
+    const active = trace.getActiveSpan();
+    active?.setAttribute(PLATFORM_PROBE_ATTRIBUTE, "1");
+    notePlatformProbe(active?.spanContext().traceId);
   }
   return NextResponse.next({ request: { headers } });
+}
+
+function withoutPlatformBaggage(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const kept: string[] = [];
+  for (const part of value.split(",")) {
+    const item = part.trim();
+    if (!item) continue;
+    const key = item.split(";", 1)[0]?.split("=", 1)[0]?.trim() ?? "";
+    let decoded = key;
+    try {
+      decoded = decodeURIComponent(key);
+    } catch {
+      decoded = key;
+    }
+    if (decoded.startsWith("wandervibe.")) continue;
+    kept.push(item);
+  }
+  return kept.length > 0 ? kept.join(",") : undefined;
 }
 
 function isPlatformProbeRequest(request: {

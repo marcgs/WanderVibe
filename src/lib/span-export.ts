@@ -1,5 +1,4 @@
-import { context, propagation, trace, TraceFlags } from "@opentelemetry/api";
-import type { Context } from "@opentelemetry/api";
+import { trace, TraceFlags } from "@opentelemetry/api";
 import { redactExportedSpan } from "@/lib/redact";
 
 type SpanContextLike = {
@@ -27,17 +26,33 @@ export type ExportSpan = {
 // Matching curl would also drop the smoke test.
 export const KUBE_PROBE_USER_AGENT = /^kube-probe\//i;
 
-// The proxy copies this into baggage on the downstream request. Next extracts
-// baggage into the render span's parent context, which is what onStart sees.
-// Next's own spans do not carry the User-Agent.
-export const PLATFORM_PROBE_BAGGAGE = "wandervibe.platform_probe";
-
 // Set on the middleware span, which ends with 200 before the route runs.
 // That span is dropped and does not decide whether the trace is a failure.
+// A client cannot set this. Incoming baggage is not a probe marker.
 export const PLATFORM_PROBE_ATTRIBUTE = "wandervibe.platform_probe";
 
 const MAX_PLATFORM_TRACES = 32;
 const MAX_HELD_SPANS = 24;
+const TRACE_ID = /^[0-9a-f]{32}$/i;
+
+// Trace ids the proxy recorded after seeing a kube-probe User-Agent.
+// Render spans do not carry that header, but they continue this trace.
+// Client baggage cannot add an entry.
+const notedPlatformProbes = new Set<string>();
+
+export function notePlatformProbe(traceId: string | undefined): void {
+  if (!traceId || !TRACE_ID.test(traceId) || /^0+$/.test(traceId)) return;
+  if (notedPlatformProbes.has(traceId)) return;
+  if (notedPlatformProbes.size >= MAX_PLATFORM_TRACES) {
+    const oldest = notedPlatformProbes.keys().next().value;
+    if (oldest !== undefined) notedPlatformProbes.delete(oldest);
+  }
+  notedPlatformProbes.add(traceId);
+}
+
+export function clearNotedPlatformProbes(): void {
+  notedPlatformProbes.clear();
+}
 
 type HeldSpan = {
   span: ExportSpan;
@@ -91,10 +106,14 @@ export function probePath(span: {
 
 export function activeSpanIsPlatformProbe(): boolean {
   const active = trace.getActiveSpan() as
-    { attributes?: Record<string, unknown> } | undefined;
-  if (active?.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") return true;
-  const baggage = propagation.getBaggage(context.active());
-  return baggage?.getEntry(PLATFORM_PROBE_BAGGAGE)?.value === "1";
+    | {
+        attributes?: Record<string, unknown>;
+        spanContext(): { traceId: string };
+      }
+    | undefined;
+  if (!active) return false;
+  if (active.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") return true;
+  return notedPlatformProbes.has(active.spanContext().traceId);
 }
 
 function statusCode(span: ExportSpan): number | undefined {
@@ -117,16 +136,6 @@ function unsample(span: ExportSpan): void {
   spanContext.traceFlags &= ~TraceFlags.SAMPLED;
 }
 
-function platformProbeBaggage(parentContext: unknown): boolean {
-  if (!parentContext || typeof parentContext !== "object") return false;
-  try {
-    const baggage = propagation.getBaggage(parentContext as Context);
-    return baggage?.getEntry(PLATFORM_PROBE_BAGGAGE)?.value === "1";
-  } catch {
-    return false;
-  }
-}
-
 function spanUserAgent(span: ExportSpan): string | undefined {
   const attributes = span.attributes ?? {};
   for (const key of [
@@ -140,8 +149,9 @@ function spanUserAgent(span: ExportSpan): string | undefined {
   return undefined;
 }
 
-function marksPlatformProbe(span: ExportSpan, parentContext: unknown): boolean {
-  if (platformProbeBaggage(parentContext)) return true;
+function marksPlatformProbe(span: ExportSpan): boolean {
+  const traceId = span.spanContext?.()?.traceId;
+  if (traceId && notedPlatformProbes.has(traceId)) return true;
   if (span.attributes?.[PLATFORM_PROBE_ATTRIBUTE] === "1") return true;
   const userAgent = spanUserAgent(span);
   return Boolean(
@@ -188,10 +198,10 @@ export function createExportSpanProcessor(): {
   }
 
   return {
-    onStart(span, parentContext) {
+    onStart(span) {
       const spanContext = span.spanContext?.();
       if (!spanContext) return;
-      if (!marksPlatformProbe(span, parentContext)) return;
+      if (!marksPlatformProbe(span)) return;
       remember(spanContext.traceId);
     },
     onEnd(span) {
@@ -217,6 +227,7 @@ export function createExportSpanProcessor(): {
       // The request span ends last. Drop the id on both outcomes so a down
       // database cannot grow the set by one failed probe at a time.
       probeTraces.delete(spanContext.traceId);
+      notedPlatformProbes.delete(spanContext.traceId);
       if (isProbeFailure(span)) {
         release(trace);
         return;

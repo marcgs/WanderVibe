@@ -1,9 +1,10 @@
-import { expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { propagation, ROOT_CONTEXT, TraceFlags } from "@opentelemetry/api";
 import {
+  clearNotedPlatformProbes,
   createExportSpanProcessor,
+  notePlatformProbe,
   PLATFORM_PROBE_ATTRIBUTE,
-  PLATFORM_PROBE_BAGGAGE,
   setPlatformProbeReleaser,
   type ExportSpan,
 } from "./span-export";
@@ -33,9 +34,13 @@ function span(options: {
   };
 }
 
-function platformContext() {
+beforeEach(() => {
+  clearNotedPlatformProbes();
+});
+
+function spoofedBaggage() {
   const baggage = propagation.createBaggage({
-    [PLATFORM_PROBE_BAGGAGE]: { value: "1" },
+    "wandervibe.platform_probe": { value: "1" },
   });
   return propagation.setBaggage(ROOT_CONTEXT, baggage);
 }
@@ -78,8 +83,8 @@ test("a successful platform probe drops the request, SELECT 1, and early spans",
   const released: ExportSpan[] = [];
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
-  const parent = platformContext();
   const traceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  notePlatformProbe(traceId);
   const prepare = span({ name: "prepare route module", traceId });
   const startResponse = span({ name: "start response", traceId });
   const query = span({
@@ -94,13 +99,13 @@ test("a successful platform probe drops the request, SELECT 1, and early spans",
     attributes: { "http.target": "/api/ready" },
   });
 
-  processor.onStart(prepare, parent);
+  processor.onStart(prepare);
   processor.onEnd(prepare);
-  processor.onStart(startResponse, parent);
+  processor.onStart(startResponse);
   processor.onEnd(startResponse);
-  processor.onStart(query, parent);
+  processor.onStart(query);
   processor.onEnd(query);
-  processor.onStart(ready, parent);
+  processor.onStart(ready);
   processor.onEnd(ready);
 
   expect(sampled(prepare)).toBe(false);
@@ -114,8 +119,8 @@ test("a failed platform probe keeps the request and releases SELECT 1", () => {
   const released: ExportSpan[] = [];
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
-  const parent = platformContext();
   const traceId = "cccccccccccccccccccccccccccccccc";
+  notePlatformProbe(traceId);
   const prepare = span({ name: "prepare route module", traceId });
   const query = span({
     name: "pg.query:SELECT wandervibe",
@@ -129,11 +134,11 @@ test("a failed platform probe keeps the request and releases SELECT 1", () => {
     attributes: { "http.target": "/api/ready" },
   });
 
-  processor.onStart(prepare, parent);
+  processor.onStart(prepare);
   processor.onEnd(prepare);
-  processor.onStart(query, parent);
+  processor.onStart(query);
   processor.onEnd(query);
-  processor.onStart(ready, parent);
+  processor.onStart(ready);
   processor.onEnd(ready);
 
   expect(sampled(ready)).toBe(true);
@@ -175,8 +180,8 @@ test("the middleware probe span is dropped and does not close the trace", () => 
   const released: ExportSpan[] = [];
   setPlatformProbeReleaser((item) => released.push(item));
   const processor = createExportSpanProcessor();
-  const parent = platformContext();
   const traceId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  notePlatformProbe(traceId);
   const middleware = span({
     name: "GET",
     traceId,
@@ -198,11 +203,11 @@ test("the middleware probe span is dropped and does not close the trace", () => 
     attributes: { "http.target": "/api/ready" },
   });
 
-  processor.onStart(middleware, parent);
+  processor.onStart(middleware);
   processor.onEnd(middleware);
-  processor.onStart(query, parent);
+  processor.onStart(query);
   processor.onEnd(query);
-  processor.onStart(ready, parent);
+  processor.onStart(ready);
   processor.onEnd(ready);
 
   expect(sampled(middleware)).toBe(false);
@@ -228,13 +233,13 @@ test("next.bubble spans are not exported", () => {
 
 test("platform probe traces stay bounded when the request span never ends", () => {
   const processor = createExportSpanProcessor();
-  const parent = platformContext();
   const ids = Array.from({ length: 33 }, (_, index) =>
-    index.toString(16).padStart(32, "0"),
+    (index + 1).toString(16).padStart(32, "0"),
   );
 
+  for (const traceId of ids) notePlatformProbe(traceId);
   for (const traceId of ids) {
-    processor.onStart(span({ name: "GET /api/ready", traceId }), parent);
+    processor.onStart(span({ name: "GET /api/ready", traceId }));
   }
 
   const evicted = span({ name: "start response", traceId: ids[0] });
@@ -244,4 +249,61 @@ test("platform probe traces stay bounded when the request span never ends", () =
 
   expect(sampled(evicted)).toBe(true);
   expect(sampled(kept)).toBe(false);
+});
+
+test("a non-probe request with platform-probe baggage is still exported", () => {
+  const processor = createExportSpanProcessor();
+  const parent = spoofedBaggage();
+  const page = span({
+    name: "GET /signin",
+    traceId: "12121212121212121212121212121212",
+    httpStatus: 200,
+    attributes: { "http.target": "/signin" },
+  });
+  const ready = span({
+    name: "GET /api/ready",
+    traceId: "13131313131313131313131313131313",
+    httpStatus: 200,
+    attributes: {
+      "http.target": "/api/ready",
+      baggage: "wandervibe.platform_probe=1",
+    },
+  });
+
+  processor.onStart(page, parent);
+  processor.onEnd(page);
+  processor.onStart(ready, parent);
+  processor.onEnd(ready);
+
+  expect(sampled(page)).toBe(true);
+  expect(sampled(ready)).toBe(true);
+});
+
+test("spoofed platform-probe baggage cannot fill the probe set", () => {
+  const processor = createExportSpanProcessor();
+  const parent = spoofedBaggage();
+  const realId = "abababababababababababababababab";
+  notePlatformProbe(realId);
+
+  for (let index = 0; index < 40; index += 1) {
+    const traceId = (index + 1).toString(16).padStart(32, "b");
+    const spoofed = span({
+      name: index % 2 === 0 ? "GET /trips" : "GET /api/ready",
+      traceId,
+      httpStatus: 200,
+      attributes: {
+        "http.target": index % 2 === 0 ? "/trips" : "/api/ready",
+        baggage: "wandervibe.platform_probe=1",
+        "http.request.header.baggage": "wandervibe.platform_probe=1",
+      },
+    });
+    processor.onStart(spoofed, parent);
+    processor.onEnd(spoofed);
+    expect(sampled(spoofed)).toBe(true);
+  }
+
+  const child = span({ name: "start response", traceId: realId });
+  processor.onStart(child, parent);
+  processor.onEnd(child);
+  expect(sampled(child)).toBe(false);
 });

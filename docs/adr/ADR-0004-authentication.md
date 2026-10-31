@@ -51,7 +51,7 @@ The proxy matcher always includes `/api`, including a path that looks like a fil
 
 ### Trip ownership, and sharing later
 
-`Trip.ownerId` references `User` and deletes the trip when the user is deleted. Nothing has been deployed, so no Azure environment has trips. The migration deletes any local rows and then adds the required column. There is no seed.
+`Trip.ownerId` references `User` and deletes the trip when the user is deleted. Nothing has been deployed, so no Azure environment has trips. The migration fails with an error if `Trip` already has rows, rather than deleting them, and then adds the required column. There is no seed.
 
 Sharing is not built. When it is, add `TripMember`:
 

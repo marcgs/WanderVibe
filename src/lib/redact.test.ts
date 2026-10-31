@@ -166,3 +166,52 @@ test("keeps dates, maps, sets, and error causes", () => {
   expect(encoded).not.toContain("hunter2-password");
   expect(encoded).not.toContain("session-token-value");
 });
+
+test("matches secret keys without splitting capitals", () => {
+  expect(scrubString("PassWord: MiXeD123")).not.toContain("MiXeD123");
+  expect(scrubString("password: MiXeD123")).toContain("[Redacted]");
+  const encoded = JSON.stringify(
+    scrubValue({ passWord: "mixed-password-value", note: "kept" }),
+  );
+  expect(encoded).not.toContain("mixed-password-value");
+  expect(encoded).toContain("kept");
+
+  const cases = [
+    ["secret-key=abc-secret-key", "abc-secret-key"],
+    ["session=abc-session-value", "abc-session-value"],
+    ["passphrase=abc-passphrase", "abc-passphrase"],
+    ["privateKey=abc-private-key", "abc-private-key"],
+    ["accessKey=abc-access-key", "abc-access-key"],
+  ] as const;
+  for (const [input, secret] of cases) {
+    expect(scrubString(input), input).not.toContain(secret);
+  }
+});
+
+test("keeps error codes that are not query secrets", () => {
+  expect(scrubString("PostgreSQL error 53300 (code: ECONNREFUSED)")).toContain(
+    "ECONNREFUSED",
+  );
+  expect(scrubString("code: 'P2002'")).toContain("P2002");
+  expect(scrubString("/cb?code=oauth-code-value")).not.toContain(
+    "oauth-code-value",
+  );
+  expect(scrubString("/cb?state=oauth-state-value")).not.toContain(
+    "oauth-state-value",
+  );
+});
+
+test("long non-matching strings scrub quickly", () => {
+  const inputs = [
+    "a".repeat(65536),
+    "a.".repeat(32768),
+    `/api/${"a".repeat(65536)}`,
+  ];
+  for (const input of inputs) {
+    const started = performance.now();
+    const scrubbed = scrubString(input);
+    expect(performance.now() - started, input.slice(0, 16)).toBeLessThan(50);
+    expect(scrubbed).toContain("…[truncated]");
+    expect(scrubbed.length).toBeLessThan(2100);
+  }
+});

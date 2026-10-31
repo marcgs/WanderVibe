@@ -77,6 +77,54 @@ jobs:
             exit 1
           fi
 
+      - name: Sign-in prerender stays quiet with telemetry on
+        env:
+          AUTH_SECRET: ci-telemetry-auth-secret-not-a-real-key
+          AUTH_GOOGLE_ID: ci-google-client
+          AUTH_GOOGLE_SECRET: ci-google-secret
+          APPLICATIONINSIGHTS_CONNECTION_STRING: InstrumentationKey=11111111-2222-4333-8444-555555555555;IngestionEndpoint=https://127.0.0.1:9
+          HOSTNAME: 127.0.0.1
+          PORT: "3457"
+        run: |
+          log="${RUNNER_TEMP}/telemetry-signin.log"
+          node .next/standalone/server.js >"${log}" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            if kill -0 "${server_pid}" 2>/dev/null; then
+              kill "${server_pid}" >/dev/null 2>&1 || true
+              wait "${server_pid}" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+            if curl -fsS -o "${RUNNER_TEMP}/signin.html" "http://127.0.0.1:3457/signin"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              echo "Server exited before /signin was ready." >&2
+              cat "${log}" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "${ready}" -ne 1 ]; then
+            echo "Timed out waiting for /signin." >&2
+            cat "${log}" >&2
+            exit 1
+          fi
+          if ! grep -q "Sign in" "${RUNNER_TEMP}/signin.html"; then
+            echo "Sign-in page did not render." >&2
+            exit 1
+          fi
+          cleanup
+          trap - EXIT
+          if grep -F "Date.now()" "${log}"; then
+            echo "Prerender logged Date.now()." >&2
+            exit 1
+          fi
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

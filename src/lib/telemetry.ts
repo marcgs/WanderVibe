@@ -5,7 +5,10 @@ import {
 } from "@azure/monitor-opentelemetry";
 import type { AzureMonitorOpenTelemetryOptions } from "@azure/monitor-opentelemetry";
 import { logger } from "@/lib/logger";
-import { createExportSpanProcessor } from "@/lib/span-export";
+import {
+  createExportSpanProcessor,
+  setPlatformProbeReleaser,
+} from "@/lib/span-export";
 
 type SpanProcessor = NonNullable<
   AzureMonitorOpenTelemetryOptions["spanProcessors"]
@@ -25,9 +28,22 @@ function redactingSpanProcessor(): SpanProcessor {
   return createExportSpanProcessor();
 }
 
+const PRERENDER_PATCH_WARNING =
+  "Telemetry could not keep the prerender clock stable";
+
+function warnPrerenderPatch(): void {
+  try {
+    logger.warn(PRERENDER_PATCH_WARNING);
+  } catch {
+    // A logging failure must not stop startup. Probes still have to pass.
+  }
+}
+
 // Cache Components aborts a prerender when Date.now() runs inside it. Ending a
 // span records a histogram, and that calls Date.now() while the prerender
 // store is still active. Leave the store for the whole processor chain.
+// The batch processor is last. A failed platform probe calls it again so a
+// dependency that ended before the request status was known is still exported.
 function keepPrerenderClockStable(): void {
   try {
     const require = createRequire(import.meta.url);
@@ -41,21 +57,32 @@ function keepPrerenderClockStable(): void {
             _activeSpanProcessor?: {
               onStart: (span: unknown, context: unknown) => void;
               onEnd: (span: unknown) => void;
+              _spanProcessors?: { onEnd?: (span: unknown) => void }[];
             };
           };
         }
       | undefined;
     const processor = sdk?._tracerProvider?._activeSpanProcessor;
-    if (!processor) return;
+    const batch = processor?._spanProcessors?.at(-1);
+    if (!processor?.onStart || !processor.onEnd || !batch?.onEnd) {
+      warnPrerenderPatch();
+      return;
+    }
+    setPlatformProbeReleaser((span) => batch.onEnd?.(span));
     const exit = storage.workUnitAsyncStorage.exit.bind(
       storage.workUnitAsyncStorage,
     );
     const onStart = processor.onStart.bind(processor);
     const onEnd = processor.onEnd.bind(processor);
-    processor.onStart = (span, context) => exit(() => onStart(span, context));
-    processor.onEnd = (span) => exit(() => onEnd(span));
+    const wrappedOnEnd = Object.assign(
+      (span: unknown) => exit(() => onEnd(span)),
+      { wandervibePrerenderWrapped: true },
+    );
+    processor.onStart = (span, parentContext) =>
+      exit(() => onStart(span, parentContext));
+    processor.onEnd = wrappedOnEnd;
   } catch {
-    // The page still renders if this patch cannot load.
+    warnPrerenderPatch();
   }
 }
 

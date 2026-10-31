@@ -10,7 +10,7 @@ Story #13 stores the workspace-based connection string in Key Vault as `applicat
 
 `src/instrumentation.ts` reads the variable when the Node.js server starts. A non-empty value loads the Azure Monitor OpenTelemetry distro (`@azure/monitor-opentelemetry`). An empty or unset value returns before that import. A throw while starting the distro is logged as `Telemetry did not start` and does not stop the process, so a bad or missing optional value does not fail the revision.
 
-The service name sent with telemetry is `wandervibe` unless `OTEL_SERVICE_NAME` is already set. Sampling is 100 percent, and every pino line is exported as a log record. The distro's default limit of 5 traces per second drops the first spans in a process, so a short check such as `/api/ready` would be missing. Successful `/api/health` and `/api/ready` traces are not exported: each one is about 9 to 12 records, roughly 90 MB per day per replica at the probe intervals, which would consume the 0.2 GB daily cap. A failed readiness check still exports its request span and the `Readiness check failed` log. 100 percent sampling of real traffic, plus exporting every log line, can still reach that cap as traffic grows. The cap from [ADR-0002](adr/ADR-0002-azure-hosting.md) then drops later telemetry.
+The service name sent with telemetry is `wandervibe` unless `OTEL_SERVICE_NAME` is already set. Sampling is 100 percent. The distro's default limit of 5 traces per second is turned off, because it drops the first spans in a process and a short check such as `/api/ready` would be missing. Every pino line is exported, except info logs on a platform probe. Platform probes are the Container Apps HTTP checks. On the Consumption environments this app uses, kubelet sends `User-Agent: kube-probe/<version>` (for example `kube-probe/1.25`, as recorded for Container Apps consumption probes). The version changes when the platform updates the cluster, so the app matches the `kube-probe/` prefix only. The proxy stores that fact as baggage `wandervibe.platform_probe` on the downstream request, because Next's spans do not carry the User-Agent. A successful platform-probe trace is not exported. That includes `prepare route module` and `start response`, which end before the request span does. A failed platform readiness check still exports the request, the PostgreSQL `SELECT 1` dependency, and the `Readiness check failed` log. A manual call or the deploy smoke test does not send `kube-probe/`, so those calls export the request and `SELECT 1`. Dedicated workload-profile environments send `curl/7.86.0` instead. This app does not use that environment type, and matching curl would also drop the smoke test. 100 percent sampling of real traffic, plus exporting every log line, can still reach the 0.2 GB daily cap as traffic grows. The cap from [ADR-0002](adr/ADR-0002-azure-hosting.md) then drops later telemetry.
 
 The exporter uses Node's HTTPS stack. The runtime image does not install the `openssl` CLI. Postgres connections from the container use the same Node TLS stack, with `sslmode=verify-full` as [ADR-0002](adr/ADR-0002-azure-hosting.md) describes.
 
@@ -18,12 +18,12 @@ Live Metrics is off. The Application Insights browser snippet is not injected.
 
 ## What is collected
 
-| Signal       | What it is                                                                                                                                                                                                                                                                           |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Requests     | Incoming HTTP calls. Next.js opens the request spans once the SDK is running. In the standalone server the distro's HTTP instrumentation does not add a second server span. A bare `GET` span with `next.bubble` is not exported: it reports 200 when the proxy answered 401 or 307. |
-| Dependencies | PostgreSQL calls made through the `pg` driver, including `SELECT 1` on `GET /api/ready`. The statement text is kept. Query parameter values are not attached.                                                                                                                        |
-| Exceptions   | Errors that escape a route, a render, a server action, or the proxy. The recorded message is scrubbed.                                                                                                                                                                               |
-| Logs         | One JSON object per line on stdout, also sent as an OpenTelemetry log record. Each line has `requestId`.                                                                                                                                                                             |
+| Signal       | What it is                                                                                                                                                                                                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Requests     | Incoming HTTP calls. Next.js opens the request spans once the SDK is running. In the standalone server the distro's HTTP instrumentation does not add a second server span. A bare `GET` span with `next.bubble` is not exported: it reports 200 when the proxy answered 401 or 307.  |
+| Dependencies | PostgreSQL calls made through the `pg` driver, including `SELECT 1` on a manual or smoke-test `GET /api/ready`, and on a failed platform readiness probe. The statement text is kept. Query parameter values are not attached. A successful platform probe does not export this span. |
+| Exceptions   | Errors that escape a route, a render, a server action, or the proxy. The recorded message is scrubbed.                                                                                                                                                                                |
+| Logs         | One JSON object per line on stdout, also sent as an OpenTelemetry log record. Each line has `requestId`.                                                                                                                                                                              |
 
 `/api/ready` logs `Readiness check failed` when Postgres does not answer. That line does not include the driver error. The HTTP body stays `{ "status": "unavailable" }`.
 
@@ -36,13 +36,13 @@ Live Metrics is off. The Application Insights browser snippet is not injected.
 
 In the Application Insights resource:
 
-| Blade                            | What you should see                                                         |
-| -------------------------------- | --------------------------------------------------------------------------- |
-| Investigate → Transaction search | Requests, and a PostgreSQL dependency on a call such as `GET /api/ready`    |
-| Investigate → Failures           | Failed requests, failed dependencies, and exceptions                        |
-| Monitoring → Logs                | `requests`, `dependencies`, `exceptions`, and `traces` (the JSON log lines) |
+| Blade                            | What you should see                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| Investigate → Transaction search | Requests, and a PostgreSQL dependency on a manual or smoke-test `GET /api/ready` |
+| Investigate → Failures           | Failed requests, failed dependencies, and exceptions                             |
+| Monitoring → Logs                | `requests`, `dependencies`, `exceptions`, and `traces` (the JSON log lines)      |
 
-After a staging deploy, call `https://<container-app-fqdn>/api/ready` from an allowlisted address, or let the deploy smoke test call it. Search Transaction search for that operation. The dependency is PostgreSQL and the statement is `SELECT 1`.
+After a staging deploy, call `https://<container-app-fqdn>/api/ready` from an allowlisted address, or let the deploy smoke test call it. Do not send `User-Agent: kube-probe/...` for this check: that is the platform probe, and a successful one is not exported. Search Transaction search for that operation. The dependency is PostgreSQL and the statement is `SELECT 1`. A response produced only by the proxy (a redirect to `/signin`, a 401, or the plain "not configured" page) has no request record. Those answers used to appear as a `next.bubble` span that reported 200, and that span is not exported. A Postgres error during session lookup shows up as an exception without a request.
 
 Container stdout is in the same Log Analytics workspace, because the Container Apps environment is attached to it. The pino lines there are the scrubbed JSON. Next.js and Auth.js also write console output to stdout, and that output is not scrubbed.
 
@@ -50,13 +50,15 @@ Container stdout is in the same Log Analytics workspace, because the Container A
 
 The app logger is pino. It writes JSON to stdout. Before a line is written or exported, values are replaced with `[Redacted]` when they are:
 
-- fields and free-text assignments whose names are passwords, tokens (`access_token`, `refresh_token`, `id_token`, `sessionToken`, and the same names with `_` or `-`), secrets, cookies, authorization, emails, or connection strings. A quoted value is removed whole, including spaces and commas
+- fields and free-text assignments whose names are passwords, tokens (`access_token`, `refresh_token`, `id_token`, `sessionToken`, and the same names with `_` or `-`), secrets, cookies, authorization, emails, connection strings, `passphrase`, `privateKey`, `accessKey`, `secret-key`, or `session`. Matching ignores the case of the raw key, so `PassWord` and `passWord` are removed and are not split into `pass_word`. A quoted value is removed whole, including spaces and commas
 - email addresses, including an address written with `%40`
 - `Bearer` and `Basic` credentials, and JWTs
 - `InstrumentationKey=...` connection strings, and database URLs that contain a password
-- query parameters `code`, `state`, `token`, `password`, `secret`, and `email`, including a percent-encoded name such as `%63ode` and a secret nested in an encoded `callbackUrl`
+- query parameters `code`, `state`, `token`, `password`, `secret`, and `email`, including a percent-encoded name such as `%63ode` and a secret nested in an encoded `callbackUrl`. `code` and `state` are only removed in a query string, so `code: ECONNREFUSED` and Prisma `code: 'P2002'` stay
 
-`requestId` uses a valid incoming `x-request-id` first. That header counts only when it is a UUID or a 32-character hex trace id. Otherwise the active trace id is used. When telemetry is off there is no trace, so the proxy stores one id for the request and every log line in that request uses it. A session token or an email in that header is not copied into the log.
+A string longer than 2 KB is cut to 2 KB and marked `…[truncated]` before those patterns run.
+
+`requestId` uses a valid incoming `x-request-id` first. That header counts only when it is a UUID or a 32-character hex trace id. Otherwise the active trace id is used. When telemetry is off there is no trace. The proxy forwards `x-request-id` on the downstream request, and route handlers read that header. The proxy's in-memory store does not reach the handler on its own. A session token or an email in that header is not copied into the log.
 
 The logger does not receive the session cookie, the authorization header, or `DATABASE_URL`.
 
@@ -68,7 +70,7 @@ Readiness calls `GET /api/ready` with `timeoutSeconds` of 5. The route runs `SEL
 
 Both routes are anonymous. The auth proxy does not look up a session for them, including when auth is not configured. [ADR-0004](adr/ADR-0004-authentication.md) lists the public paths. The story #14 smoke test, `scripts/smoke-test.sh`, calls both URLs with no session and expects `200` `{ "status": "ok" }`.
 
-Platform probes call the replica directly. They do not pass through the ingress allowlist. [docs/infra.md](infra.md) has the allowlist and the smoke-test steps.
+Platform probes call the replica directly. They do not pass through the ingress allowlist. [docs/infra.md](infra.md) has the allowlist and the smoke-test steps. On Consumption, those HTTP probes send `User-Agent: kube-probe/<version>`. Successful ones are left out of Application Insights so they do not fill the daily cap. A failed readiness probe is still exported, including `SELECT 1`. The smoke test sends its own user agent and is exported too.
 
 ## Check without Azure
 

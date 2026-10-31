@@ -2,9 +2,10 @@
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-const { useAzureMonitor, error } = vi.hoisted(() => ({
+const { useAzureMonitor, error, warn } = vi.hoisted(() => ({
   useAzureMonitor: vi.fn(),
   error: vi.fn(),
+  warn: vi.fn(),
 }));
 
 vi.mock("@azure/monitor-opentelemetry", () => ({
@@ -12,7 +13,7 @@ vi.mock("@azure/monitor-opentelemetry", () => ({
 }));
 
 vi.mock("@/lib/logger", () => ({
-  logger: { error },
+  logger: { error, warn },
 }));
 
 import {

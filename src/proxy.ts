@@ -1,3 +1,4 @@
+import { trace } from "@opentelemetry/api";
 import {
   NextResponse,
   type NextFetchEvent,
@@ -12,7 +13,16 @@ import {
   unconfiguredPageResponse,
 } from "@/lib/access";
 import { safeCallbackUrl } from "@/lib/callback-url";
-import { requestIdFor, runWithRequestId } from "@/lib/request-id";
+import {
+  requestIdFor,
+  requestIdFrom,
+  runWithRequestId,
+} from "@/lib/request-id";
+import {
+  KUBE_PROBE_USER_AGENT,
+  PLATFORM_PROBE_ATTRIBUTE,
+  PLATFORM_PROBE_BAGGAGE,
+} from "@/lib/span-export";
 
 // Auth.js types this wrapper as a route handler as well as proxy.
 const withSession = auth((req) => {
@@ -21,7 +31,7 @@ const withSession = auth((req) => {
     Boolean(req.auth?.user?.id),
   );
   if (decision.kind === "public" || decision.kind === "allow") {
-    return NextResponse.next();
+    return nextWithRequestHeaders(req);
   }
   if (decision.kind === "unauthorized" || decision.kind === "unconfigured") {
     return decision.kind === "unauthorized"
@@ -61,14 +71,47 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
 async function handleProxy(request: NextRequest, event: NextFetchEvent) {
   if (!isAuthConfigured()) {
     const decision = enforceAccess(request.nextUrl.pathname, false);
-    if (decision.kind === "public") return NextResponse.next();
+    if (decision.kind === "public") return nextWithRequestHeaders(request);
     if (decision.kind === "unauthorized") return unauthorizedResponse();
     return unconfiguredPageResponse();
   }
   if (decideAccess(request.nextUrl.pathname, false).kind === "public") {
-    return NextResponse.next();
+    return nextWithRequestHeaders(request);
   }
   return withSession(request, event);
+}
+
+// Route handlers do not see proxy AsyncLocalStorage or a mutated request.
+// Next copies these headers onto the downstream request.
+function nextWithRequestHeaders(request: {
+  headers: Headers;
+  nextUrl: { pathname: string };
+}): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.set("x-request-id", requestIdFrom(request.headers));
+  if (isPlatformProbeRequest(request)) {
+    trace.getActiveSpan()?.setAttribute(PLATFORM_PROBE_ATTRIBUTE, "1");
+    const existing = headers.get("baggage");
+    const entry = `${PLATFORM_PROBE_BAGGAGE}=1`;
+    headers.set(
+      "baggage",
+      existing && existing.length > 0 ? `${existing},${entry}` : entry,
+    );
+  }
+  return NextResponse.next({ request: { headers } });
+}
+
+function isPlatformProbeRequest(request: {
+  headers: Headers;
+  nextUrl: { pathname: string };
+}): boolean {
+  if (
+    request.nextUrl.pathname !== "/api/health" &&
+    request.nextUrl.pathname !== "/api/ready"
+  ) {
+    return false;
+  }
+  return KUBE_PROBE_USER_AGENT.test(request.headers.get("user-agent") ?? "");
 }
 
 export const config = {

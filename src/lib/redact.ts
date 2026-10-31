@@ -25,22 +25,33 @@ const SENSITIVE_NAMES = [
   "instrumentation_key",
   "api_key",
   "client_secret",
+  "passphrase",
+  "private_key",
+  "access_key",
+  "secret_key",
+  "session",
 ] as const;
 
-// Short names that also appear inside ordinary field names (status_code).
-// Those match only as the whole key. Longer names also match as a suffix,
-// so access_token, sessionToken, and user.email are covered by one list.
-const EXACT_NAMES = new Set(["code", "state", "pwd"]);
+// OAuth code and state are secrets in a query string. The same words in
+// `code: ECONNREFUSED` or Prisma `code: P2002` are not.
+const QUERY_ONLY = new Set(["code", "state"]);
 
 const URL_SCHEMES = new Set(["http", "https", "postgresql", "postgres"]);
 
-const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const AUTH_SCHEME = /\b(Bearer|Basic|Digest|Negotiate)\s+\S+/gi;
-const JWT = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
-const USERINFO_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^@\s/]+@[^\s'"]+/gi;
+// Lookbehinds stop the engine retrying every byte of a long non-match.
+// Without them a 64 KB query string blocks the event loop for seconds.
+const EMAIL = /(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const AUTH_SCHEME = /(?<![A-Za-z])(Bearer|Basic|Digest|Negotiate)\s+\S+/gi;
+const JWT =
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g;
+const USERINFO_URL =
+  /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^@\s/]+@[^\s'"]+/gi;
+
+const MAX_SCRUB_LENGTH = 2048;
 
 type Assignment = {
   separator: number;
+  keyStart: number;
   key: string;
   normalized: string;
 };
@@ -52,16 +63,16 @@ type ReadValue = {
 
 export function isSensitiveKey(key: string): boolean {
   const normalized = normalizeKey(key);
-  if (!normalized) return false;
-  return SENSITIVE_NAMES.some((name) => {
-    if (normalized === name) return true;
-    if (EXACT_NAMES.has(name)) return false;
-    return normalized.endsWith(`_${name}`);
-  });
+  if (!normalized || QUERY_ONLY.has(normalized)) return false;
+  return keyMatches(normalized);
 }
 
 export function scrubString(input: string): string {
-  return redactDecoded(decodeRepeated(input), 0);
+  const capped =
+    input.length > MAX_SCRUB_LENGTH
+      ? `${input.slice(0, MAX_SCRUB_LENGTH)}…[truncated]`
+      : input;
+  return redactDecoded(decodeRepeated(capped), 0);
 }
 
 export function scrubValue(
@@ -170,7 +181,7 @@ function redactAssignments(text: string, depth: number): string {
       continue;
     }
     out += text.slice(i, value.contentStart);
-    out += isSensitiveKey(found.key)
+    out += shouldRedact(found, text)
       ? "[Redacted]"
       : redactDecoded(text.slice(value.contentStart, value.end), depth + 1);
     i = value.end;
@@ -193,7 +204,7 @@ function nextAssignment(text: string, from: number): Assignment | undefined {
     if (keyStart >= keyEnd) continue;
     const key = text.slice(keyStart, keyEnd);
     if (!/[A-Za-z%]/.test(key)) continue;
-    return { separator, key, normalized: normalizeKey(key) };
+    return { separator, keyStart, key, normalized: normalizeKey(key) };
   }
   return undefined;
 }
@@ -239,14 +250,48 @@ function readValue(text: string, valueStart: number): ReadValue {
   return { contentStart, end: cursor };
 }
 
+function shouldRedact(found: Assignment, text: string): boolean {
+  if (QUERY_ONLY.has(found.normalized)) {
+    return isQueryAssignment(text, found.keyStart);
+  }
+  return isSensitiveKey(found.key);
+}
+
+function isQueryAssignment(text: string, keyStart: number): boolean {
+  let cursor = keyStart - 1;
+  while (
+    cursor >= 0 &&
+    (text[cursor] === '"' ||
+      text[cursor] === "'" ||
+      text[cursor] === " " ||
+      text[cursor] === "\t")
+  ) {
+    cursor -= 1;
+  }
+  return cursor >= 0 && (text[cursor] === "?" || text[cursor] === "&");
+}
+
+// Case is folded before any other rewrite, so PassWord stays password and
+// is not split into pass_word. Separators and camelCase still match.
 function normalizeKey(key: string): string {
-  const decoded = decodeRepeated(key);
-  const broken = decoded.replace(/([a-z0-9])([A-Z])/g, "$1_$2");
-  return broken
-    .replace(/[^A-Za-z0-9]+/g, "_")
+  const lower = decodeRepeated(key).toLowerCase();
+  return lower
+    .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
-    .toLowerCase()
     .replace(/api_?key/g, "api_key");
+}
+
+function keyMatches(normalized: string): boolean {
+  const parts = normalized.split("_").filter(Boolean);
+  const flat = parts.join("");
+  for (const name of SENSITIVE_NAMES) {
+    if (QUERY_ONLY.has(name)) continue;
+    const nameFlat = name.replace(/_/g, "");
+    if (flat === nameFlat || normalized === name) return true;
+    if (normalized.endsWith(`_${name}`) || parts.includes(name)) return true;
+    if (nameFlat.length >= 5 && flat.endsWith(nameFlat)) return true;
+  }
+  return false;
 }
 
 function decodeRepeated(value: string): string {

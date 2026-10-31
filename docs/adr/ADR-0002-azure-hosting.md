@@ -24,7 +24,7 @@ The app is already a standalone container. Azure Container Apps Consumption runs
 
 App Service was the other serious option. A custom container there needs an App Service plan that is billed while the plan exists. Scale to zero is not a plan feature, and the free tier does not fit this image. Deployment slots are a nicer rollback tool than Container Apps revisions, but story #14 rolls back by deploying an older commit SHA, which a Container App revision also supports. The epic already named Container Apps, and this story keeps that choice.
 
-The trade-off is operational: cold starts on staging, revisions instead of slots, and no built-in Easy Auth. Sign-in will be Auth.js in the app (story #15), so Easy Auth is not a reason to pick App Service.
+The trade-off is operational: cold starts on staging, revisions instead of slots, and no built-in Easy Auth. Sign-in is Auth.js in the app (ADR-0004), so Easy Auth is not a reason to pick App Service.
 
 ### Cheapest SKUs that still match the app
 
@@ -63,11 +63,11 @@ The readiness probe requests `GET /api/ready` with `timeoutSeconds` of 5. A read
 
 ### Ingress stays closed until sign-in
 
-Story #15 adds sign-in. Until that story is accepted, every page and API on the hostname is available to whoever can open it. Staging and production both set `restrictPublicAccess` to true. `allowedIpRanges` is an array of IPv4 CIDRs and defaults to empty. The parameter files read `WANDER_ALLOWED_IP_RANGES` and commit no addresses.
+Sign-in is enforced in the app (ADR-0004). Staging and production still set `restrictPublicAccess` to true until an operator opens ingress after the provider apps exist. `allowedIpRanges` is an array of IPv4 CIDRs and defaults to empty. The parameter files read `WANDER_ALLOWED_IP_RANGES` and commit no addresses.
 
-Container Apps allows every client when the restriction list is empty, and every rule in that list shares one action. While access is restricted, the template sends Allow rules only. An empty parameter becomes one Allow rule for `192.0.2.1/32` (RFC 5737 TEST-NET-1, not a client address). Every other IPv4 source receives HTTP 403 with the body `RBAC: access denied`. A non-empty parameter becomes one Allow rule per CIDR, and every other source still receives 403. Each entry must be an IPv4 CIDR with a prefix from `minAllowedPrefixLength` (default 16) through 32. A shorter prefix or any other malformed entry fails the deployment and the error names it. `restrictPublicAccess` set to false sends an empty rule list, which opens the hostname. That waits until sign-in is enforced on every page except the sign-in page and `/api/health`.
+Container Apps allows every client when the restriction list is empty, and every rule in that list shares one action. While access is restricted, the template sends Allow rules only. An empty parameter becomes one Allow rule for `192.0.2.1/32` (RFC 5737 TEST-NET-1, not a client address). Every other IPv4 source receives HTTP 403 with the body `RBAC: access denied`. A non-empty parameter becomes one Allow rule per CIDR, and every other source still receives 403. Each entry must be an IPv4 CIDR with a prefix from `minAllowedPrefixLength` (default 16) through 32. A shorter prefix or any other malformed entry fails the deployment and the error names it. `restrictPublicAccess` set to false sends an empty rule list, which opens the hostname. That waits until sign-in is configured. `/api/health` and `/api/ready` stay anonymous so the probes and the smoke test keep working. ADR-0004 records the other public paths.
 
-Production uses the same flag and the same empty default, so it is not publicly exposed before #15. Story #14's smoke test calls the public hostname for `/api/health` and `/api/ready`. The Bicep deploy keeps operator ranges only. While `publicAccessRestricted` is true, the job adds one Allow rule named for that GitHub run and an `always` step removes that rule only if it is present, so the sentinel or the operator rules remain. After story #15, when that output is false, the temporary rule is skipped. An empty rule list would open the app. [docs/infra.md](../infra.md) has the commands. A self-hosted runner that is already on the operator list can run the same check without a temporary address.
+Production uses the same flag and the same empty default, so it is not publicly exposed while the parameter files keep the flag true. The deploy smoke test calls the public hostname for `/api/health` and `/api/ready` with no session. Both stay anonymous. The Bicep deploy keeps operator ranges only. While `publicAccessRestricted` is true, the job adds one Allow rule named for that GitHub run and an `always` step removes that rule only if it is present, so the sentinel or the operator rules remain. When that output is false, the temporary rule is skipped. An empty rule list would open the app. [docs/infra.md](../infra.md) and [docs/deploy.md](../deploy.md) have the commands. A self-hosted runner that is already on the operator list can run the same check without a temporary address.
 
 Platform probes call the replica directly. A closed public list leaves them healthy.
 
@@ -80,7 +80,7 @@ Platform probes call the replica directly. A closed public list leaves them heal
 - The 0.2 GB daily log cap can drop telemetry. That is accepted for a personal app.
 - Anyone who can open a connection from Azure can attempt a login. The password must be long and must stay in Key Vault.
 - [ADR-0003](ADR-0003-continuous-deployment.md) splits the GitHub OIDC identity per environment, passes the commit SHA as `containerImageTag`, runs `prisma migrate deploy` as a Container Apps job, and smoke-checks the app from an allowlisted address. This template still does not grant those CD roles, and it does not read Key Vault from either CD identity.
-- Until story #15, staging and production answer 403 to every real client unless the deploy passes `allowedIpRanges`. Opening the hostname is `restrictPublicAccess=false` after sign-in is enforced.
+- While `restrictPublicAccess` stays true, staging and production answer 403 to every real client unless the deploy passes `allowedIpRanges`. Opening the hostname is `restrictPublicAccess=false` after sign-in is configured, and the parameter files have to change or the next GitHub deploy closes it again. [docs/deploy.md](../deploy.md) has that step.
 
 ## Alternatives considered
 

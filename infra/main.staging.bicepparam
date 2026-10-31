@@ -16,5 +16,12 @@ var allowedIpRangesFromEnv = readEnvironmentVariable('WANDER_ALLOWED_IP_RANGES',
 param allowedIpRanges = empty(allowedIpRangesFromEnv)
   ? []
   : filter(map(split(allowedIpRangesFromEnv, ','), range => trim(range)), range => !empty(range))
-// Stay closed until story #15. Do not set this to false before then.
+// false until the GitHub environment variable AUTH_CONFIGURED is true.
+// See docs/deploy.md. Unset or any other value keeps the auth secrets off the app.
+param authConfigured = readEnvironmentVariable('AUTH_CONFIGURED', 'false') == 'true'
+param googleAuthConfigured = readEnvironmentVariable('AUTH_GOOGLE_CONFIGURED', 'false') == 'true'
+param microsoftAuthConfigured = readEnvironmentVariable('AUTH_MICROSOFT_CONFIGURED', 'false') == 'true'
+// Stay closed until sign-in is configured and you open ingress on purpose.
+// A later change of this file is what keeps GitHub deploys from closing it again.
+// See docs/deploy.md.
 param restrictPublicAccess = true

@@ -70,6 +70,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check the server build does not hard-code test login
+        run: |
+          if grep -R -E --include='*.js' 'AUTH_TEST_LOGIN["'\'']?:[[:space:]]*["'\'']true["'\'']' .next/server; then
+            echo "The server build hard-codes AUTH_TEST_LOGIN=true." >&2
+            exit 1
+          fi
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

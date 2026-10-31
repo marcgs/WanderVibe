@@ -2,8 +2,9 @@ import { connection } from "next/server";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { GET } from "./route";
 
-const { queryRaw } = vi.hoisted(() => ({
+const { queryRaw, logReadyFailure } = vi.hoisted(() => ({
   queryRaw: vi.fn(),
+  logReadyFailure: vi.fn(),
 }));
 
 vi.mock("next/server", () => ({
@@ -16,10 +17,14 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+vi.mock("@/lib/logger", () => ({
+  logReadyFailure,
+}));
+
 beforeEach(() => {
   queryRaw.mockReset();
+  logReadyFailure.mockReset();
   vi.mocked(connection).mockClear();
-  vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -35,7 +40,7 @@ test("ready endpoint returns ok without the query result", async () => {
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
   await expect(response.json()).resolves.toEqual({ status: "ok" });
-  expect(console.error).not.toHaveBeenCalled();
+  expect(logReadyFailure).not.toHaveBeenCalled();
 });
 
 test("ready endpoint hides database failures", async () => {
@@ -53,11 +58,9 @@ test("ready endpoint hides database failures", async () => {
   expect(body).not.toContain("password");
   expect(body).not.toContain("wandervibe");
   expect(body).not.toContain("azure.com");
-  expect(console.error).toHaveBeenCalledOnce();
-  expect(console.error).toHaveBeenCalledWith("Readiness check failed");
-  expect(vi.mocked(console.error).mock.calls.flat().join(" ")).not.toContain(
-    leaked,
-  );
+  expect(logReadyFailure).toHaveBeenCalledOnce();
+  expect(JSON.stringify(logReadyFailure.mock.calls)).not.toContain(leaked);
+  expect(JSON.stringify(logReadyFailure.mock.calls)).not.toContain("password");
 });
 
 test("ready endpoint returns 503 when the query never finishes", async () => {
@@ -73,5 +76,6 @@ test("ready endpoint returns 503 when the query never finishes", async () => {
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(JSON.parse(body)).toEqual({ status: "unavailable" });
   expect(body).not.toContain("timeout");
-  expect(console.error).toHaveBeenCalledWith("Readiness check failed");
+  expect(logReadyFailure).toHaveBeenCalledOnce();
+  expect(JSON.stringify(logReadyFailure.mock.calls)).not.toContain("timeout");
 });

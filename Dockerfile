@@ -2,6 +2,7 @@
 # Startup and liveness: GET /api/health on port 3000.
 # Readiness: GET /api/ready. The route returns within 2.5s.
 # The body is only ok or unavailable.
+# Application Insights uses Node's TLS stack. This image does not install openssl.
 # The runtime image has no Prisma CLI. The migrate stage does.
 # Continuous deployment runs that stage inside Azure, because Postgres
 # accepts connections from Azure services only.

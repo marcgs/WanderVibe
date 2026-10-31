@@ -1,4 +1,6 @@
 import { connection } from "next/server";
+import { logReadyFailure } from "@/lib/logger";
+import { requestIdFrom } from "@/lib/request-id";
 import { prisma } from "@/lib/prisma";
 
 const noStore = { "cache-control": "no-store" } as const;
@@ -23,14 +25,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 
 // Deploy smoke tests call this to prove the container can reach Postgres.
 // The body is only ok or unavailable: no host, SQL, or credential text.
-export async function GET() {
+export async function GET(request?: Request) {
   await connection();
 
   try {
     await withTimeout(prisma.$queryRaw`SELECT 1`, readyTimeoutMs);
     return readyResponse("ok", 200);
   } catch {
-    console.error("Readiness check failed");
+    logReadyFailure(requestIdFrom(request?.headers));
     return readyResponse("unavailable", 503);
   }
 }

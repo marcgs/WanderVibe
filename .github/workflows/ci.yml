@@ -77,6 +77,13 @@ jobs:
             exit 1
           fi
 
+      - name: Sign-in prerender and probe export
+        env:
+          AUTH_SECRET: ci-telemetry-auth-secret-not-a-real-key
+          AUTH_GOOGLE_ID: ci-google-client
+          AUTH_GOOGLE_SECRET: ci-google-secret
+        run: node scripts/telemetry-export-check.mjs
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

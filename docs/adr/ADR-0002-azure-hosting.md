@@ -10,6 +10,8 @@ Accepted
 
 Story #24 updated this decision the same day: ingress stays closed until sign-in.
 
+Story #16 updated this decision on 2026-10-31: the app exports telemetry when the Application Insights connection string is set.
+
 ## Context
 
 WanderVibe is a personal trip planner. ADR-0001 ships it as a non-root Next.js container with `GET /api/health` and PostgreSQL via `DATABASE_URL`. The epic hosts that container in Switzerland North and wants staging and production created the same way every time, at a small personal-use cost. Story #13 defines the resources. Story #14 deploys the image from CI. Custom domains, VNet integration, and private endpoints are out of scope.
@@ -59,7 +61,13 @@ Startup and liveness probes request `GET /api/health` on port 3000. That route d
 
 The readiness probe requests `GET /api/ready` with `timeoutSeconds` of 5. A readiness failure only removes the replica from ingress. It does not restart it. That is what should happen when the app cannot reach Postgres: stop sending traffic, leave the process running.
 
-`GET /api/ready` runs `SELECT 1` and returns `200` `{ "status": "ok" }` or `503` `{ "status": "unavailable" }`. The body has no host, SQL, or error text. The route gives up after 2.5 seconds, which is inside the probe timeout, so the probe observes the 503 instead of timing out on its own. The driver sets `connectionTimeoutMillis` to 3 seconds and a query timeout of 2.5 seconds. `connect_timeout` in the URL is not used, because node-postgres ignores it. Story #14 can call the same path after deploy.
+`GET /api/ready` runs `SELECT 1` and returns `200` `{ "status": "ok" }` or `503` `{ "status": "unavailable" }`. The body has no host, SQL, or error text. The route gives up after 2.5 seconds, which is inside the probe timeout, so the probe observes the 503 instead of timing out on its own. The driver sets `connectionTimeoutMillis` to 3 seconds and a query timeout of 2.5 seconds. `connect_timeout` in the URL is not used, because node-postgres ignores it. Story #14 can call the same path after deploy. [docs/observability.md](../observability.md) records the same probe setup for operators.
+
+### Telemetry is off until the connection string is set
+
+The app starts the Azure Monitor OpenTelemetry distro from `src/instrumentation.ts` only when `APPLICATIONINSIGHTS_CONNECTION_STRING` is non-empty. Local development and the CI image leave it unset, so nothing is exported and the process does not load the distro. Container Apps already receives the Key Vault reference from this template. If the distro throws while starting, the process logs `Telemetry did not start` and keeps serving `/api/health`.
+
+The distro exports incoming HTTP requests, PostgreSQL client spans from the `pg` driver (including `SELECT 1` on a manual or smoke-test `/api/ready`), and exceptions that escape a request. Sampling is 100 percent. The distro default of 5 traces per second drops the first spans in a process, which would hide a short check such as `/api/ready`. Successful Consumption platform probes (`User-Agent: kube-probe/<version>`) are not exported. A failed readiness probe still exports the request and `SELECT 1`. Logs are one JSON object per line on stdout, with a request id, and the same record is sent as an OpenTelemetry log. Emails, tokens, passwords, cookies, authorization headers, and connection strings are removed before a line is written or a span is exported. The browser snippet is not injected. Live Metrics is off. The probe setup above is unchanged.
 
 ### Ingress stays closed until sign-in
 

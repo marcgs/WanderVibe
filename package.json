@@ -20,11 +20,15 @@
   },
   "dependencies": {
     "@auth/prisma-adapter": "2.11.3",
+    "@azure/monitor-opentelemetry": "1.20.1",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.221.0",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "next": "16.4.3",
     "next-auth": "5.0.0-beta.32",
     "pg": "^8.23.1",
+    "pino": "10.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
@@ -50,5 +54,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "@opentelemetry/api": "1.9.1"
   }
 }

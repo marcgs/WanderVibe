@@ -41,7 +41,13 @@ test("the Prisma adapter stores a user, an account, and a session", async () => 
     providerAccountId: `google-${user.id}`,
   });
   const trip = await prisma.trip.create({
-    data: { title: "Lisbon", ownerId: user.id },
+    data: {
+      title: "Lisbon",
+      destination: "Portugal",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-06-08T00:00:00.000Z"),
+      ownerId: user.id,
+    },
   });
 
   expect(found?.user.email).toBe("adapter@wandervibe.test");

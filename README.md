@@ -29,7 +29,7 @@ DATABASE_URL="postgresql://wandervibe:wandervibe@localhost:5432/wandervibe"
 
 `npm install` generates the Prisma Client (`postinstall` runs `prisma generate`). `npx prisma migrate dev` creates the database schema from the committed migrations. Docker Compose publishes Postgres on `127.0.0.1:5432` only, with database, user, and password `wandervibe`. That password is for local development only.
 
-The app and the Prisma CLI require `DATABASE_URL`. They do not fall back to a built-in URL. Next.js reads `.env`. The Prisma CLI reads it through `prisma.config.ts`. Auth.js requires `AUTH_SECRET` at runtime. Leave the provider variables empty to run without Microsoft or Google. Set `AUTH_TEST_LOGIN=true` when you want the local test-traveler button. That flag does nothing when `NODE_ENV` is `production`.
+The app and the Prisma CLI require `DATABASE_URL`. They do not fall back to a built-in URL. Next.js reads `.env`. The Prisma CLI reads it through `prisma.config.ts`. Auth.js requires `AUTH_SECRET` at runtime. Leave the provider variables empty to run without Microsoft or Google. Set `AUTH_TEST_LOGIN=true` when you want the local test-traveler buttons. That flag does nothing when `NODE_ENV` is `production`.
 
 ## Run the app
 
@@ -37,7 +37,7 @@ The app and the Prisma CLI require `DATABASE_URL`. They do not fall back to a bu
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). An unsigned visit redirects to [http://localhost:3000/signin](http://localhost:3000/signin). With provider credentials in `.env`, the page offers Microsoft and Google. With `AUTH_TEST_LOGIN=true`, it also offers a test traveler. After sign-in, the home page is the WanderVibe placeholder and a sign-out button. [http://localhost:3000/api/health](http://localhost:3000/api/health) returns HTTP 200 and `{ "status": "ok" }` with no session. It does not touch the database. [http://localhost:3000/api/ready](http://localhost:3000/api/ready) runs `SELECT 1` with no session and returns `{ "status": "ok" }` when Postgres answers, or HTTP 503 and `{ "status": "unavailable" }` when it does not. The body does not include error text. Any other unsigned API request returns 401. Application Insights stays off unless `APPLICATIONINSIGHTS_CONNECTION_STRING` is set. Leave it unset locally. [docs/observability.md](docs/observability.md) describes the Azure views and the logging rules.
+Open [http://localhost:3000](http://localhost:3000). An unsigned visit redirects to [http://localhost:3000/signin](http://localhost:3000/signin). With provider credentials in `.env`, the page offers Microsoft and Google. With `AUTH_TEST_LOGIN=true`, it also offers two test travelers. After sign-in, the home page lists that person's trips, a form to create one, and a sign-out button. [http://localhost:3000/api/health](http://localhost:3000/api/health) returns HTTP 200 and `{ "status": "ok" }` with no session. It does not touch the database. [http://localhost:3000/api/ready](http://localhost:3000/api/ready) runs `SELECT 1` with no session and returns `{ "status": "ok" }` when Postgres answers, or HTTP 503 and `{ "status": "unavailable" }` when it does not. The body does not include error text. Any other unsigned API request returns 401. Application Insights stays off unless `APPLICATIONINSIGHTS_CONNECTION_STRING` is set. Leave it unset locally. [docs/observability.md](docs/observability.md) describes the Azure views and the logging rules.
 
 For a production build on the host, without Docker:
 
@@ -92,7 +92,7 @@ Playwright starts `npm run dev` on port 3000 when that port is free, with `AUTH_
 
 ## Database
 
-Prisma ORM stores data in PostgreSQL. The schema is `prisma/schema.prisma`. Auth.js uses `User`, `Account`, and `Session`. `Trip.ownerId` points at `User`. Migrations live in `prisma/migrations` and are committed. Create or update the local database with:
+Prisma ORM stores data in PostgreSQL. The schema is `prisma/schema.prisma`. Auth.js uses `User`, `Account`, and `Session`. A trip keeps its name in `title`, with `destination`, `startDate`, `endDate`, and `ownerId` pointing at `User`. Migrations live in `prisma/migrations` and are committed. Create or update the local database with:
 
 ```bash
 cp .env.example .env

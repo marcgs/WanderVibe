@@ -71,15 +71,27 @@ async function SignInForm({
           </p>
         )}
         {testLogin ? (
-          <form action={signInAsTestTraveler}>
-            <input type="hidden" name="callbackUrl" value={callbackUrl} />
-            <button
-              type="submit"
-              className="w-full rounded-full border border-stone-300 px-4 py-3 text-sm font-semibold text-stone-800"
-            >
-              Sign in as test traveler
-            </button>
-          </form>
+          <>
+            <form action={signInAsTestTraveler}>
+              <input type="hidden" name="callbackUrl" value={callbackUrl} />
+              <button
+                type="submit"
+                className="w-full rounded-full border border-stone-300 px-4 py-3 text-sm font-semibold text-stone-800"
+              >
+                Sign in as test traveler
+              </button>
+            </form>
+            <form action={signInAsTestTraveler}>
+              <input type="hidden" name="callbackUrl" value={callbackUrl} />
+              <input type="hidden" name="traveler" value="other" />
+              <button
+                type="submit"
+                className="w-full rounded-full border border-stone-300 px-4 py-3 text-sm font-semibold text-stone-800"
+              >
+                Sign in as other traveler
+              </button>
+            </form>
+          </>
         ) : null}
       </div>
     </SignInCard>

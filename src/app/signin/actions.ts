@@ -24,7 +24,8 @@ export async function signInAsTestTraveler(formData: FormData) {
   if (!isTestLoginEnabled()) {
     redirect("/signin");
   }
-  await createTestSession();
+  const traveler = formData.get("traveler");
+  await createTestSession(typeof traveler === "string" ? traveler : undefined);
   redirect(callbackFrom(formData));
 }
 

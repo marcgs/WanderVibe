@@ -21,7 +21,13 @@ test("findOwnedTrip returns null for another user's trip", async () => {
     data: { email: "owner-b@wandervibe.test", name: "Other" },
   });
   const trip = await prisma.trip.create({
-    data: { title: "Lisbon", ownerId: owner.id },
+    data: {
+      title: "Lisbon",
+      destination: "Portugal",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-06-08T00:00:00.000Z"),
+      ownerId: owner.id,
+    },
   });
 
   await expect(findOwnedTrip(other.id, trip.id)).resolves.toBeNull();

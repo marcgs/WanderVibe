@@ -1,7 +1,9 @@
+import { trace } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import pino, { type DestinationStream, type Logger, type LogFn } from "pino";
 import { requestIdFrom } from "@/lib/request-id";
 import { scrubValue } from "@/lib/redact";
+import { probePath } from "@/lib/span-export";
 
 let emitting = false;
 
@@ -60,6 +62,12 @@ function emitLog(level: number, args: unknown[]): void {
         }
       }
     }
+    // Successful probes must not export info logs. A failed probe logs at warn.
+    const active = trace.getActiveSpan() as {
+      name?: string;
+      attributes?: Record<string, unknown>;
+    } | null;
+    if (level < 40 && active && probePath(active)) return;
     // No-op until the Azure Monitor distro registers a logger provider.
     logs.getLogger("wandervibe").emit({
       severityNumber: severityNumber(level),

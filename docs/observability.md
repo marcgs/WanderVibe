@@ -10,7 +10,7 @@ Story #13 stores the workspace-based connection string in Key Vault as `applicat
 
 `src/instrumentation.ts` reads the variable when the Node.js server starts. A non-empty value loads the Azure Monitor OpenTelemetry distro (`@azure/monitor-opentelemetry`). An empty or unset value returns before that import. A throw while starting the distro is logged as `Telemetry did not start` and does not stop the process, so a bad or missing optional value does not fail the revision.
 
-The service name sent with telemetry is `wandervibe` unless `OTEL_SERVICE_NAME` is already set. Sampling is 100 percent. The distro's default limit of 5 traces per second drops the first spans in a process, so a short check such as `/api/ready` would be missing. A personal site stays inside the daily cap at 100 percent.
+The service name sent with telemetry is `wandervibe` unless `OTEL_SERVICE_NAME` is already set. Sampling is 100 percent, and every pino line is exported as a log record. The distro's default limit of 5 traces per second drops the first spans in a process, so a short check such as `/api/ready` would be missing. Successful `/api/health` and `/api/ready` traces are not exported: each one is about 9 to 12 records, roughly 90 MB per day per replica at the probe intervals, which would consume the 0.2 GB daily cap. A failed readiness check still exports its request span and the `Readiness check failed` log. 100 percent sampling of real traffic, plus exporting every log line, can still reach that cap as traffic grows. The cap from [ADR-0002](adr/ADR-0002-azure-hosting.md) then drops later telemetry.
 
 The exporter uses Node's HTTPS stack. The runtime image does not install the `openssl` CLI. Postgres connections from the container use the same Node TLS stack, with `sslmode=verify-full` as [ADR-0002](adr/ADR-0002-azure-hosting.md) describes.
 
@@ -18,12 +18,12 @@ Live Metrics is off. The Application Insights browser snippet is not injected.
 
 ## What is collected
 
-| Signal       | What it is                                                                                                                                                    |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Requests     | Incoming HTTP calls. Next.js opens a span for each request once the SDK is running, and the distro's HTTP instrumentation does as well.                       |
-| Dependencies | PostgreSQL calls made through the `pg` driver, including `SELECT 1` on `GET /api/ready`. The statement text is kept. Query parameter values are not attached. |
-| Exceptions   | Errors that escape a route, a render, a server action, or the proxy. The recorded message is scrubbed.                                                        |
-| Logs         | One JSON object per line on stdout, also sent as an OpenTelemetry log record. Each line has `requestId`.                                                      |
+| Signal       | What it is                                                                                                                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Requests     | Incoming HTTP calls. Next.js opens the request spans once the SDK is running. In the standalone server the distro's HTTP instrumentation does not add a second server span. A bare `GET` span with `next.bubble` is not exported: it reports 200 when the proxy answered 401 or 307. |
+| Dependencies | PostgreSQL calls made through the `pg` driver, including `SELECT 1` on `GET /api/ready`. The statement text is kept. Query parameter values are not attached.                                                                                                                        |
+| Exceptions   | Errors that escape a route, a render, a server action, or the proxy. The recorded message is scrubbed.                                                                                                                                                                               |
+| Logs         | One JSON object per line on stdout, also sent as an OpenTelemetry log record. Each line has `requestId`.                                                                                                                                                                             |
 
 `/api/ready` logs `Readiness check failed` when Postgres does not answer. That line does not include the driver error. The HTTP body stays `{ "status": "unavailable" }`.
 
@@ -44,19 +44,19 @@ In the Application Insights resource:
 
 After a staging deploy, call `https://<container-app-fqdn>/api/ready` from an allowlisted address, or let the deploy smoke test call it. Search Transaction search for that operation. The dependency is PostgreSQL and the statement is `SELECT 1`.
 
-Container stdout is in the same Log Analytics workspace, because the Container Apps environment is attached to it. Those lines are the same JSON.
+Container stdout is in the same Log Analytics workspace, because the Container Apps environment is attached to it. The pino lines there are the scrubbed JSON. Next.js and Auth.js also write console output to stdout, and that output is not scrubbed.
 
 ## Logging rules
 
 The app logger is pino. It writes JSON to stdout. Before a line is written or exported, values are replaced with `[Redacted]` when they are:
 
-- fields whose names are passwords, tokens, secrets, cookies, authorization, emails, or connection strings
-- email addresses
-- `Bearer` tokens and JWTs
+- fields and free-text assignments whose names are passwords, tokens (`access_token`, `refresh_token`, `id_token`, `sessionToken`, and the same names with `_` or `-`), secrets, cookies, authorization, emails, or connection strings. A quoted value is removed whole, including spaces and commas
+- email addresses, including an address written with `%40`
+- `Bearer` and `Basic` credentials, and JWTs
 - `InstrumentationKey=...` connection strings, and database URLs that contain a password
-- query parameters `code`, `state`, `token`, `password`, `secret`, and `email`
+- query parameters `code`, `state`, `token`, `password`, `secret`, and `email`, including a percent-encoded name such as `%63ode` and a secret nested in an encoded `callbackUrl`
 
-`requestId` is the active trace id when telemetry is on, so the log and the request share an id in Application Insights. Otherwise it is a new UUID, or the incoming `x-request-id` when that header is a UUID or a 32-character hex trace id. Any other header value is ignored, so a session token or an email in that header is not copied into the log.
+`requestId` uses a valid incoming `x-request-id` first. That header counts only when it is a UUID or a 32-character hex trace id. Otherwise the active trace id is used. When telemetry is off there is no trace, so the proxy stores one id for the request and every log line in that request uses it. A session token or an email in that header is not copied into the log.
 
 The logger does not receive the session cookie, the authorization header, or `DATABASE_URL`.
 

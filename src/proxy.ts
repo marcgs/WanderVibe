@@ -12,6 +12,7 @@ import {
   unconfiguredPageResponse,
 } from "@/lib/access";
 import { safeCallbackUrl } from "@/lib/callback-url";
+import { requestIdFor, runWithRequestId } from "@/lib/request-id";
 
 // Auth.js types this wrapper as a route handler as well as proxy.
 const withSession = auth((req) => {
@@ -47,6 +48,17 @@ const withSession = auth((req) => {
 // outage does not fail liveness or the deploy smoke test. When auth is not
 // configured, no request calls Auth.js.
 export async function proxy(request: NextRequest, event: NextFetchEvent) {
+  const requestId = requestIdFor(request.headers);
+  try {
+    request.headers.set("x-request-id", requestId);
+  } catch {
+    // A frozen header list still leaves the id in the async store below.
+  }
+  // One id for every log line in this request when no trace is active.
+  return runWithRequestId(requestId, () => handleProxy(request, event));
+}
+
+async function handleProxy(request: NextRequest, event: NextFetchEvent) {
   if (!isAuthConfigured()) {
     const decision = enforceAccess(request.nextUrl.pathname, false);
     if (decision.kind === "public") return NextResponse.next();

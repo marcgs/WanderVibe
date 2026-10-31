@@ -1,7 +1,11 @@
-import { useAzureMonitor as startAzureMonitor } from "@azure/monitor-opentelemetry";
+import { createRequire } from "node:module";
+import {
+  useAzureMonitor as startAzureMonitor,
+  _getSdkInstance,
+} from "@azure/monitor-opentelemetry";
 import type { AzureMonitorOpenTelemetryOptions } from "@azure/monitor-opentelemetry";
 import { logger } from "@/lib/logger";
-import { redactExportedSpan } from "@/lib/redact";
+import { createExportSpanProcessor } from "@/lib/span-export";
 
 type SpanProcessor = NonNullable<
   AzureMonitorOpenTelemetryOptions["spanProcessors"]
@@ -18,20 +22,41 @@ export function resetTelemetryForTests(): void {
 }
 
 function redactingSpanProcessor(): SpanProcessor {
-  return {
-    onStart() {
-      return undefined;
-    },
-    onEnd(span) {
-      redactExportedSpan(span);
-    },
-    shutdown() {
-      return Promise.resolve();
-    },
-    forceFlush() {
-      return Promise.resolve();
-    },
-  };
+  return createExportSpanProcessor();
+}
+
+// Cache Components aborts a prerender when Date.now() runs inside it. Ending a
+// span records a histogram, and that calls Date.now() while the prerender
+// store is still active. Leave the store for the whole processor chain.
+function keepPrerenderClockStable(): void {
+  try {
+    const require = createRequire(import.meta.url);
+    const storage =
+      require("next/dist/server/app-render/work-unit-async-storage.external") as {
+        workUnitAsyncStorage: { exit: <T>(fn: () => T) => T };
+      };
+    const sdk = _getSdkInstance() as
+      | {
+          _tracerProvider?: {
+            _activeSpanProcessor?: {
+              onStart: (span: unknown, context: unknown) => void;
+              onEnd: (span: unknown) => void;
+            };
+          };
+        }
+      | undefined;
+    const processor = sdk?._tracerProvider?._activeSpanProcessor;
+    if (!processor) return;
+    const exit = storage.workUnitAsyncStorage.exit.bind(
+      storage.workUnitAsyncStorage,
+    );
+    const onStart = processor.onStart.bind(processor);
+    const onEnd = processor.onEnd.bind(processor);
+    processor.onStart = (span, context) => exit(() => onStart(span, context));
+    processor.onEnd = (span) => exit(() => onEnd(span));
+  } catch {
+    // The page still renders if this patch cannot load.
+  }
 }
 
 export function telemetryOptions(
@@ -43,8 +68,7 @@ export function telemetryOptions(
       // Failed batches stay in memory. The container disk does not keep them.
       disableOfflineStorage: true,
     },
-    // The distro's default rate limit drops the first spans. A personal app
-    // keeps every trace, which stays inside the 0.2 GB daily cap.
+    // The distro's default rate limit drops the first spans.
     samplingRatio: 1,
     tracesPerSecond: 0,
     // Live Metrics opens another channel and is not part of this story.
@@ -80,6 +104,7 @@ export function startTelemetry(env?: TelemetryEnv): boolean {
   }
   try {
     startAzureMonitor(telemetryOptions(connectionString));
+    keepPrerenderClockStable();
     started = true;
     return true;
   } catch {

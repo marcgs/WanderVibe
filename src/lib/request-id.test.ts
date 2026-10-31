@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { acceptRequestId, requestIdFrom } from "./request-id";
+import { acceptRequestId, requestIdFrom, runWithRequestId } from "./request-id";
 
 test("request ids accept a uuid or a trace id and ignore secrets", () => {
   const uuid = "11111111-1111-4111-8111-111111111111";
@@ -28,4 +28,17 @@ test("a secret in x-request-id is replaced", () => {
   expect(requestId).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
+});
+
+test("logs in one request share an id when telemetry is off", () => {
+  const seen: string[] = [];
+  runWithRequestId("11111111-1111-4111-8111-111111111111", () => {
+    seen.push(requestIdFrom());
+    seen.push(requestIdFrom());
+  });
+
+  expect(seen).toEqual([
+    "11111111-1111-4111-8111-111111111111",
+    "11111111-1111-4111-8111-111111111111",
+  ]);
 });

@@ -1,4 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { trace } from "@opentelemetry/api";
+
+const requestIds = new AsyncLocalStorage<string>();
 
 // UUIDs and W3C trace ids only. A session token or an email in x-request-id
 // is ignored so it cannot be copied into a log line.
@@ -19,12 +22,23 @@ function activeTraceId(): string | undefined {
   return acceptRequestId(traceId);
 }
 
+export function runWithRequestId<T>(requestId: string, fn: () => T): T {
+  return requestIds.run(requestId, fn);
+}
+
+export function requestIdFor(headers?: {
+  get(name: string): string | null;
+}): string {
+  return acceptRequestId(headers?.get("x-request-id")) ?? crypto.randomUUID();
+}
+
 export function requestIdFrom(headers?: {
   get(name: string): string | null;
 }): string {
   return (
     acceptRequestId(headers?.get("x-request-id")) ??
     activeTraceId() ??
+    requestIds.getStore() ??
     crypto.randomUUID()
   );
 }
@@ -34,5 +48,10 @@ export function requestIdFromRecord(
 ): string {
   const raw = headers["x-request-id"] ?? headers["X-Request-Id"];
   const incoming = Array.isArray(raw) ? raw[0] : raw;
-  return acceptRequestId(incoming) ?? activeTraceId() ?? crypto.randomUUID();
+  return (
+    acceptRequestId(incoming) ??
+    activeTraceId() ??
+    requestIds.getStore() ??
+    crypto.randomUUID()
+  );
 }

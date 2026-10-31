@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { redactExportedSpan, scrubString } from "./redact";
+import { redactExportedSpan, scrubString, scrubValue } from "./redact";
 
 test("scrub keeps ordinary text and removes secrets from strings", () => {
   const password = "hunter2-password";
@@ -73,6 +73,96 @@ test("exported spans keep the SQL text and drop secrets", () => {
   expect(encoded).not.toContain("other@example.com");
   expect(encoded).not.toContain("cookie-secret-value");
   expect(encoded).not.toContain("bearer-secret-value");
+  expect(encoded).not.toContain("hunter2-password");
+  expect(encoded).not.toContain("session-token-value");
+});
+
+test("scrubs JSON, quoted, encoded, and nested secrets", () => {
+  const cases = [
+    { input: '{"access_token":"abc123secret"}', secret: "abc123secret" },
+    {
+      input: 'sessionToken: "opaque-session-value"',
+      secret: "opaque-session-value",
+    },
+    { input: 'password="my secret, pass"', secret: "my secret, pass" },
+    {
+      input: "Authorization: Basic dXNlcjpwYXNz",
+      secret: "dXNlcjpwYXNz",
+    },
+    { input: "/search?q=marc%40example.com", secret: "marc%40example.com" },
+    { input: "/x?%63ode=oauth-code-value", secret: "oauth-code-value" },
+    {
+      input:
+        "/signin?callbackUrl=%2Fapi%2Fauth%2Fcallback%2Fgoogle%3Fcode%3Dnested-code-value",
+      secret: "nested-code-value",
+    },
+  ];
+
+  for (const { input, secret } of cases) {
+    expect(scrubString(input), input).not.toContain(secret);
+  }
+
+  expect(scrubString('password="my secret, pass"')).not.toContain(
+    "secret, pass",
+  );
+  expect(scrubString("/search?q=marc%40example.com")).not.toContain(
+    "marc@example.com",
+  );
+  expect(
+    scrubString('{"refresh_token":"refresh-secret","id_token":"id-secret"}'),
+  ).not.toContain("refresh-secret");
+  expect(
+    scrubString('{"refresh_token":"refresh-secret","id_token":"id-secret"}'),
+  ).not.toContain("id-secret");
+  expect(scrubString("100% done %")).toContain("100% done");
+});
+
+test("scrubs compound keys, spaced passwords, and nested callback secrets", () => {
+  const cases = [
+    ["client_secret=abc123", "abc123"],
+    ["AUTH_GOOGLE_SECRET=gsec", "gsec"],
+    ["refresh_token=rt1", "rt1"],
+    ['{"access_token":"ya29.secret"}', "ya29.secret"],
+    ["access_token: ya29.plain", "ya29.plain"],
+    ["x-api-key: sk_live_123", "sk_live_123"],
+    ["apikey=abc-key", "abc-key"],
+    ["authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"],
+    ["password: hunter 2", "hunter 2"],
+    [
+      "/signin?callbackUrl=%2Ftrips%3Ftoken%3Dtok-secret-value",
+      "tok-secret-value",
+    ],
+  ] as const;
+
+  for (const [input, secret] of cases) {
+    expect(scrubString(input), input).not.toContain(secret);
+  }
+
+  const prisma =
+    'Invalid `prisma.account.create()` invocation:\n\n{\n  access_token: "ya29.prisma-access",\n  refresh_token: "prisma-refresh"\n}';
+  const scrubbed = scrubString(prisma);
+  expect(scrubbed).not.toContain("ya29.prisma-access");
+  expect(scrubbed).not.toContain("prisma-refresh");
+  expect(scrubbed).toContain("prisma.account.create()");
+});
+
+test("keeps dates, maps, sets, and error causes", () => {
+  const date = new Date("2026-10-31T00:00:00.000Z");
+  const error = new Error("failed for marc@example.com");
+  error.cause = new Error("password=hunter2-password");
+  const value = scrubValue({
+    when: date,
+    tags: new Set(["ok", "marc@example.com"]),
+    meta: new Map([["note", "token=session-token-value"]]),
+    err: error,
+  });
+  const encoded = JSON.stringify(value);
+
+  expect(encoded).toContain("2026-10-31");
+  expect(encoded).toContain("ok");
+  expect(encoded).toContain("cause");
+  expect(encoded).toContain("failed for");
+  expect(encoded).not.toContain("marc@example.com");
   expect(encoded).not.toContain("hunter2-password");
   expect(encoded).not.toContain("session-token-value");
 });

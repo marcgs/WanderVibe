@@ -51,7 +51,7 @@ The proxy matcher always includes `/api`, including a path that looks like a fil
 
 ### Trip ownership, and sharing later
 
-`Trip.ownerId` references `User` and deletes the trip when the user is deleted. Nothing has been deployed, so no Azure environment has trips. The migration deletes any local rows and then adds the required column. There is no seed.
+`Trip.ownerId` references `User` and deletes the trip when the user is deleted. Nothing has been deployed, so no Azure environment has trips. The migration fails with an error if `Trip` already has rows, rather than deleting them, and then adds the required column. There is no seed.
 
 Sharing is not built. When it is, add `TripMember`:
 
@@ -83,7 +83,7 @@ Sign-in in the app is not the same as opening the hostname. `restrictPublicAcces
 
 ## Consequences
 
-- A deploy with `AUTH_CONFIGURED` unset succeeds and does not read the auth secrets. Marc registers the apps, writes the six secrets, sets `AUTH_CONFIGURED=true`, and deploys again. [docs/deploy.md](../deploy.md) has the order.
+- A deploy with `AUTH_CONFIGURED` unset succeeds and does not read the auth secrets. Marc registers the apps, writes `auth-secret` plus the secrets of the providers in use, sets `AUTH_CONFIGURED=true`, and deploys again. [docs/deploy.md](../deploy.md) has the order.
 - Live Microsoft and Google sign-in cannot be proven in CI. The test traveler covers the session, the protected page, and sign-out.
 - `next-auth` stays on the pinned v5 beta until a stable 5.0.0 exists. An upgrade is a deliberate change with an e2e run, not a floating range.
 - The Prisma adapter is called through a cast because its types target Prisma 6. An integration test creates a user, an account, and a session through the adapter.

@@ -281,7 +281,9 @@ On the first real staging deploy, also run the live checks in [docs/infra.md](in
 
 Auth.js signs a traveler in with Microsoft Entra ID or Google and stores the session in Postgres. The decisions are in [ADR-0004](adr/ADR-0004-authentication.md). The Container App reads provider values from Key Vault only after auth is turned on. The repository and the GitHub Actions variables do not hold those values. There are no new repository secrets.
 
-Leave auth off for the first deploys. `authConfigured` defaults to false. The parameter files set it from the GitHub Environment variable `AUTH_CONFIGURED` (`true` turns it on; unset or any other value leaves it off). Set that variable on the `staging` environment and, separately, on the `prod` environment. It is not a repository variable, so one environment can turn on before the other. The deploy job copies it into the shell as `AUTH_CONFIGURED` before `az deployment group create`. A manual deploy of `infra/main.bicep` reads the same shell variable.
+Leave auth off for the first deploys. `authConfigured` defaults to false. The parameter files set it from the GitHub Environment variable `AUTH_CONFIGURED`. Each of `AUTH_CONFIGURED`, `AUTH_GOOGLE_CONFIGURED`, and `AUTH_MICROSOFT_CONFIGURED` must be exactly `true`, case-sensitive. Unset, empty, `True`, or any other value leaves that switch off. Set the variables on the `staging` environment and, separately, on the `prod` environment. They are not repository variables, so one environment can turn on before the other. The deploy job copies them into the shell before `az deployment group create`.
+
+A manual `infra/main.bicep` deploy reads the same shell variables. If that shell does not export `AUTH_CONFIGURED=true` and the provider flags you already turned on, the deployment sets those flags back to false and turns auth off. The next CD run restores whatever the GitHub Environment variables say. Export the same `true` values in that shell when you want the manual deploy to leave auth on.
 
 While the flag is false, the template does not reference `auth-secret` or the provider secrets. A missing secret cannot fail the revision. The app starts. `/api/health` and `/api/ready` return 200 with no session. Every page returns plain text `Sign-in is not configured yet`. Every other API returns 401. The proxy does not call Auth.js in that state.
 
@@ -362,37 +364,37 @@ Grant your user Key Vault Secrets Officer on the vault for this step, on your us
 
 `auth-secret` is always required once auth is on. Add the Google pair, the Entra trio, or both. Skip the commands for a provider you are not turning on.
 
-Do not enable shell tracing (`set -x`) while you run this. `read -rs` does not echo the value, and the history records the prompt rather than the secret. `--output none` keeps the Azure CLI from printing it. Unset each variable before the next prompt.
+Do not enable shell tracing (`set -x`) while you run this. `read -rs` does not echo the value, and the history records the prompt rather than the secret. The value is passed to Azure CLI through `--file`, not `--value`, so it is not an argument in the process list. `--output none` keeps the CLI from printing it. Unset each variable before the next prompt.
 
 ```bash
 vault="<keyVaultName>"
 
 secret="$(openssl rand -base64 32)"
-az keyvault secret set --vault-name "$vault" --name auth-secret --value "$secret" --output none
+az keyvault secret set --vault-name "$vault" --name auth-secret --file <(printf '%s' "$secret") --encoding utf-8 --output none
 unset secret
 
 # Google, when AUTH_GOOGLE_CONFIGURED=true
 read -rsp "Google client id: " google_id
 printf '\n'
-az keyvault secret set --vault-name "$vault" --name auth-google-id --value "$google_id" --output none
+az keyvault secret set --vault-name "$vault" --name auth-google-id --file <(printf '%s' "$google_id") --encoding utf-8 --output none
 unset google_id
 read -rsp "Google client secret: " google_secret
 printf '\n'
-az keyvault secret set --vault-name "$vault" --name auth-google-secret --value "$google_secret" --output none
+az keyvault secret set --vault-name "$vault" --name auth-google-secret --file <(printf '%s' "$google_secret") --encoding utf-8 --output none
 unset google_secret
 
 # Entra, when AUTH_MICROSOFT_CONFIGURED=true
 read -rsp "Entra application id: " entra_id
 printf '\n'
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --value "$entra_id" --output none
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-id --file <(printf '%s' "$entra_id") --encoding utf-8 --output none
 unset entra_id
 read -rsp "Entra client secret: " entra_secret
 printf '\n'
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --value "$entra_secret" --output none
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-secret --file <(printf '%s' "$entra_secret") --encoding utf-8 --output none
 unset entra_secret
 read -rsp "Entra issuer URL: " entra_issuer
 printf '\n'
-az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --value "$entra_issuer" --output none
+az keyvault secret set --vault-name "$vault" --name auth-microsoft-entra-id-issuer --file <(printf '%s' "$entra_issuer") --encoding utf-8 --output none
 unset entra_issuer
 ```
 

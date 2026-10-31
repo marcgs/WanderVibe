@@ -1,6 +1,6 @@
 // Auth.js and the sign-in form only return to a path on this app.
-// The decoded copy is only for the safety checks. The original is returned
-// so encoded query parameters stay encoded.
+// Decoding is only for the safety checks. The returned path keeps the
+// encoding the URL parser accepted, so query parameters stay encoded.
 export function safeCallbackUrl(
   value: string | string[] | undefined | null,
 ): string {
@@ -15,7 +15,22 @@ export function safeCallbackUrl(
   }
 
   if (!isSameAppPath(raw) || !isSameAppPath(decoded)) return "/";
-  return raw;
+
+  // Collapse dot segments such as /.//evil.com and /%2e%2e/%2fevil.com.
+  // Search and hash keep the encoding the URL parser already accepted.
+  const url = new URL(raw, "http://localhost");
+  if (url.origin !== "http://localhost") return "/";
+  const normalized = `${url.pathname}${url.search}${url.hash}`;
+
+  let normalizedDecoded: string;
+  try {
+    normalizedDecoded = decodeURIComponent(normalized);
+  } catch {
+    return "/";
+  }
+  if (!isSameAppPath(normalized) || !isSameAppPath(normalizedDecoded))
+    return "/";
+  return normalized;
 }
 
 function isSameAppPath(value: string): boolean {

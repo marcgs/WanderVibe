@@ -59,12 +59,15 @@ model VerificationToken {
 }
 
 model Trip {
-  id        String   @id @default(cuid())
-  title     String
-  ownerId   String
-  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  title       String
+  destination String
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([ownerId])
 }

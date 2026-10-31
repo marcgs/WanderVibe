@@ -65,7 +65,7 @@ The pair `(tripId, userId)` is unique. Creating a trip writes `Trip.ownerId` and
 
 ### Test sign-in
 
-Playwright cannot complete a real Microsoft or Google login in CI. `AUTH_TEST_LOGIN=true` shows "Sign in as test traveler" and enables `POST /api/test/session`. Both upsert the user `playwright@wandervibe.test` and insert a `Session` row, then set the Auth.js session cookie. The flag is ignored when `NODE_ENV` is `production`, including when the variable is set on the container. Azure does not set it. The Playwright web server sets it.
+Playwright cannot complete a real Microsoft or Google login in CI. `AUTH_TEST_LOGIN=true` shows "Sign in as test traveler" and "Sign in as other traveler", and enables `POST /api/test/session`. The first button and the POST upsert `playwright@wandervibe.test`. The second button upserts `playwright-b@wandervibe.test`. Each inserts a `Session` row, then sets the Auth.js session cookie. The traveler key is not an email address: any other value stays on the first account, so the path cannot sign in as a real user. The flag is ignored when `NODE_ENV` is `production`, including when the variable is set on the container. Azure does not set it. The Playwright web server sets it.
 
 ### Auth stays off until the secrets exist
 

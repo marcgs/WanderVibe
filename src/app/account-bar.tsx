@@ -8,7 +8,7 @@ export async function AccountBar() {
   const label = user.name ?? user.email ?? "traveler";
 
   return (
-    <div className="mt-8 flex flex-col items-center gap-3">
+    <div className="flex flex-col gap-3 sm:items-end">
       <p className="text-sm text-stone-600">Signed in as {label}</p>
       <form action={signOutAction}>
         <button

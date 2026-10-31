@@ -12,7 +12,13 @@ test("prisma persists a trip in Postgres", async () => {
     data: { email: "scaffold@wandervibe.test", name: "Scaffold" },
   });
   const created = await prisma.trip.create({
-    data: { title: "Scaffold check", ownerId: owner.id },
+    data: {
+      title: "Scaffold check",
+      destination: "Lisbon",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-06-08T00:00:00.000Z"),
+      ownerId: owner.id,
+    },
   });
 
   try {

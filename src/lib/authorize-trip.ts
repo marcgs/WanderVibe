@@ -18,6 +18,13 @@ export function authorizeTrip(
   return { allowed: true };
 }
 
+// Prisma `@default(cuid())`. Anything else is not a stored trip id.
+const tripIdPattern = /^c[0-9a-z]{24}$/;
+
+export function isTripId(id: string): boolean {
+  return tripIdPattern.test(id);
+}
+
 // Looks up by owner and id together, so a miss and someone else's trip
 // are the same result: null.
 export function findOwnedTrip(userId: string, tripId: string) {

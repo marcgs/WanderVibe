@@ -25,4 +25,21 @@ test("probes stay up and the app fails closed when auth is not configured", asyn
   expect(api.status()).toBe(401);
   expect(api.headers().location).toBeUndefined();
   await expect(api.json()).resolves.toEqual({ error: "unauthorized" });
+
+  const tripPage = await request.get("/trips/c000000000000000000000000", {
+    maxRedirects: 0,
+  });
+  const tripBody = await tripPage.text();
+  expect(tripPage.status()).toBe(200);
+  expect(tripPage.headers().location).toBeUndefined();
+  expect(tripPage.headers()["content-type"]).toContain("text/plain");
+  expect(tripBody).toContain("Sign-in is not configured yet");
+  expect(tripBody).not.toContain("WanderVibe");
+
+  const tripApi = await request.get("/api/trips/c000000000000000000000000", {
+    maxRedirects: 0,
+  });
+  expect(tripApi.status()).toBe(401);
+  expect(tripApi.headers().location).toBeUndefined();
+  await expect(tripApi.json()).resolves.toEqual({ error: "unauthorized" });
 });

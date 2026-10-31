@@ -142,6 +142,17 @@ test("another traveler gets 404 and does not see the trip", async ({
     expect(hidden.status()).toBe(404);
     expect(await hidden.json()).toEqual({ error: "not_found" });
 
+    const unknownPage = await pageB.goto("/trips/not-a-real-trip");
+    expect(unknownPage?.status()).toBe(404);
+    const unknownText = await pageB.locator("main").innerText();
+    expect(unknownText).toContain("Trip not found");
+    expect(unknownText).not.toContain(name);
+    expect(unknownText).not.toContain("Kyoto");
+
+    const hiddenPage = await pageB.goto(`/trips/${trip!.id}`);
+    expect(hiddenPage?.status()).toBe(404);
+    expect(await pageB.locator("main").innerText()).toBe(unknownText);
+
     const changed = await pageB.request.patch(`/api/trips/${trip!.id}`, {
       data: { title: "Stolen" },
     });
